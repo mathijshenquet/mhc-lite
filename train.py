@@ -63,6 +63,7 @@ wandb_project = 'owt'
 wandb_run_name = 'exp' # 'run' + str(time.time())
 wandb_group = "default"
 wandb_notes = ""
+wandb_tags = ""  # comma-separated; also logged as config.method / config.model_size for grouping in the UI
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -126,8 +127,9 @@ if wandb_log and master_process:
         project = wandb_project , 
         name    = wandb_run_name + '-' + str(random.randint(1000,9999)), 
         group   = wandb_group,
-        config  = config , 
+        config  = {**config, "method": hyper_conn_type, "model_size": out_prefix_model, "tokens_per_step": gradient_accumulation_steps * ddp_world_size * batch_size * block_size},
         notes   = wandb_notes,
+        tags    = [t for t in wandb_tags.split(",") if t],
     )
 
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
