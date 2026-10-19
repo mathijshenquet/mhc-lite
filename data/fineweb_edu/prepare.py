@@ -4,14 +4,17 @@ import tiktoken
 from datasets import load_dataset
 from tqdm import tqdm
 
-NUM_PROC = 8  
+NUM_PROC = int(os.environ.get("NUM_PROC", "8"))
 SHARD_SIZE = int(1e8)
+# FINEWEB_FRACTION: use a prefix slice of sample-10BT (e.g. 0.15 → ~1.5B tokens) instead of all of it.
+FRACTION = float(os.environ.get("FINEWEB_FRACTION", "1.0"))
+SPLIT = "train" if FRACTION >= 1.0 else f"train[:{int(FRACTION * 100)}%]"
 
 print("Loading FineWeb-Edu dataset...")
 dataset = load_dataset(
     "HuggingFaceFW/fineweb-edu",
     name="sample-10BT",
-    split="train",
+    split=SPLIT,
     num_proc=NUM_PROC,
 )
 
