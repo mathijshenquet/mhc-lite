@@ -362,6 +362,8 @@ class MHCLite(Module):
         res_coeff = torch.softmax(res_coeff, dim = -1)
         alpha_residual = einsum(res_coeff, perms, '... r, r i j-> ... i j') # (..., s, s)
         alpha_residual = self.split_fracs(alpha_residual) # (..., f, s, f, s)
+        if getattr(self, 'record_mixers', False):
+            self.last_mixer = alpha_residual.detach()[..., 0, :, 0, :]   # (..., s, t) per token
         
         # (..., f, s, f, v)
         alpha_pre = self.pre_branch_scale * dynamic_pre + static_pre  # (..., s*v)

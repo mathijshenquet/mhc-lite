@@ -368,6 +368,8 @@ class ManifoldConstrainedHyperConnections(Module):
         alpha_residual = rearrange(alpha_residual, '... f s g t -> ... f g s t')
         alpha_residual = sinkhorn_knopps(alpha_residual, self.sinkhorn_iters)
         alpha_residual = rearrange(alpha_residual, '... f g s t -> ... f s g t')
+        if getattr(self, 'record_mixers', False):
+            self.last_mixer = alpha_residual.detach()[..., 0, :, 0, :]   # (..., s, t) per token
 
         alpha = cat((alpha_pre, alpha_residual), dim = -1) # (..., f, s, f, s+v)
 

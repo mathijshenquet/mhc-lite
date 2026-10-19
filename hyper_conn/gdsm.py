@@ -381,6 +381,8 @@ class GDSMHyperConnections(Module):
         gate = gate[..., :, None]                                                     # ... f g(=1 broadcast)
         alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]))
         alpha_residual = rearrange(alpha_residual, '... f g s t -> ... f s g t')
+        if getattr(self, 'record_mixers', False):
+            self.last_mixer = alpha_residual.detach()[..., 0, :, 0, :]   # (..., s, t) per token
 
         alpha = cat((alpha_pre, alpha_residual), dim = -1) # (..., f, s, f, s+v)
 
