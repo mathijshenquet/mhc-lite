@@ -8,7 +8,9 @@ per-token mixers, then reports per layer (attention and MLP folds separately):
   dev_norm      mean ||H − J/n||₂   (GDSM: the gate; 1 = on the sphere, 0 = full averaging)
   off_identity  mean ||H − I||_F
   fwd_gain / bwd_gain   mean max |row sum| / max |column sum|  (the mHC paper's propagation metric)
-and the depth product's fwd/bwd gain and σ₂ (detail-subspace contraction).  Writes <out_dir>/mixer_stats.json.
+and the depth product's fwd/bwd gain and σ₂ (detail-subspace contraction).  Also reports a PAIRED
+validation loss: mean cross-entropy over the same seeded validation batches for every checkpoint,
+so evaluation sampling noise cancels between variants.  Writes <out_dir>/mixer_stats.json.
 """
 
 import argparse
@@ -39,7 +41,8 @@ def val_batches(dataset, block_size, batch_size, n, device, seed=0):
     for _ in range(n):
         ix = rng.integers(len(data) - block_size - 1, size=batch_size)
         x = torch.stack([torch.from_numpy(data[i:i + block_size].astype(np.int64)) for i in ix])
-        yield x.to(device)
+        y = torch.stack([torch.from_numpy(data[i + 1:i + 1 + block_size].astype(np.int64)) for i in ix])
+        yield x.to(device), y.to(device)
 
 
 def recorders(model):
@@ -77,10 +80,12 @@ def main():
     cfg = ckpt["config"]
     recorded = recorders(model)
     per_layer = {name: [] for name, _ in recorded}
-    composite_fwd, composite_bwd, composite_sigma2 = [], [], []
+    composite_fwd, composite_bwd, composite_sigma2, paired_losses = [], [], [], []
     with torch.no_grad():
-        for x in val_batches(cfg["dataset"], cfg["block_size"], args.batch_size, args.batches, args.device):
-            model(x)
+        for x, y in val_batches(cfg["dataset"], cfg["block_size"], args.batch_size, args.batches, args.device):
+            with torch.autocast(device_type="cuda" if args.device.startswith("cuda") else "cpu", dtype=torch.bfloat16):
+                _, loss = model(x, y)
+            paired_losses.append(loss.item())
             mixers = []
             for name, module in recorded:
                 m = module.last_mixer.float().reshape(-1, module.last_mixer.shape[-2], module.last_mixer.shape[-1]).cpu()
@@ -97,10 +102,13 @@ def main():
         "val_loss": ckpt["best_val_loss"] if isinstance(ckpt["best_val_loss"], float) else float(ckpt["best_val_loss"]),
         "layers": {name: stats(torch.cat(ms)) for name, ms in per_layer.items()},
         "composite": {"fwd_gain": float(np.mean(composite_fwd)), "bwd_gain": float(np.mean(composite_bwd)), "sigma2": float(np.mean(composite_sigma2))},
+        "paired_val_loss": float(np.mean(paired_losses)),
+        "paired_val_sem": float(np.std(paired_losses) / np.sqrt(len(paired_losses))),
+        "paired_batches": args.batches,
     }
     with open(os.path.join(args.out_dir, "mixer_stats.json"), "w") as f:
         json.dump(report, f, indent=1)
-    print(f"{report['hyper_conn_type']}  iter {report['iter']}  val {report['val_loss']:.4f}")
+    print(f"{report['hyper_conn_type']}  iter {report['iter']}  val {report['val_loss']:.4f}  paired val {report['paired_val_loss']:.4f} ± {report['paired_val_sem']:.4f} ({args.batches} batches)")
     print(f"{'layer':28s} {'neg':>6s} {'dev':>6s} {'offI':>6s} {'fwd':>6s} {'bwd':>6s} {'sig2':>6s}")
     for name, s in report["layers"].items():
         print(f"{name:28s} {s['neg_mass']:6.3f} {s['dev_norm']:6.3f} {s['off_identity']:6.3f} {s['fwd_gain']:6.3f} {s['bwd_gain']:6.3f} {s['sigma2']:6.3f}")
