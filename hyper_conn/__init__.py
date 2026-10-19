@@ -21,6 +21,12 @@ from .mhc_lite import (
     get_init_and_expand_reduce_stream_functions as mhclite_get_init_and_expand_reduce_stream_functions
 )
 
+from .gdsm import (
+    GDSMHyperConnections,
+    get_expand_reduce_stream_functions as gdsm_get_expand_reduce_stream_functions,
+    get_init_and_expand_reduce_stream_functions as gdsm_get_init_and_expand_reduce_stream_functions
+)
+
 from .mhc_analysis import (
     MHCAnalysis,
     get_expand_reduce_stream_functions as mhc_analysis_get_expand_reduce_stream_functions,
@@ -43,6 +49,8 @@ def hyper_conn_init_func(hyper_conn_type: str, hyper_conn_n: int):
         return mc_get_init_and_expand_reduce_stream_functions(hyper_conn_n)
     elif hyper_conn_type == "mhc_lite":
         return mhclite_get_init_and_expand_reduce_stream_functions(hyper_conn_n)
+    elif hyper_conn_type == "gdsm":
+        return gdsm_get_init_and_expand_reduce_stream_functions(hyper_conn_n)
     elif hyper_conn_type == "analysis":
         return mhc_analysis_get_init_and_expand_reduce_stream_functions(hyper_conn_n)
     else:

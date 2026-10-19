@@ -12,3 +12,9 @@ env/
 venv/
 wandb
 
+out-*/
+__pycache__/
+wandb/
+data/*/*.bin
+data/*/*.pkl
+data/*/*.txt
