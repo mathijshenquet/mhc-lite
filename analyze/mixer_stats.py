@@ -45,10 +45,14 @@ def val_batches(dataset, block_size, batch_size, n, device, seed=0):
         yield x.to(device), y.to(device)
 
 
+RECORDING = ("ManifoldConstrainedHyperConnections", "MHCLite", "GDSMHyperConnections")
+
+
 def recorders(model):
+    """Hyper-connection modules that implement the opt-in mixer recorder (plain / hc do not)."""
     found = []
     for name, module in model.named_modules():
-        if name.endswith(("hc_attn", "hc_mlp")) and hasattr(module, "width_connection"):
+        if name.endswith(("hc_attn", "hc_mlp")) and type(module).__name__ in RECORDING:
             module.record_mixers = True
             found.append((name, module))
     return found
@@ -86,6 +90,8 @@ def main():
             with torch.autocast(device_type="cuda" if args.device.startswith("cuda") else "cpu", dtype=torch.bfloat16):
                 _, loss = model(x, y)
             paired_losses.append(loss.item())
+            if not recorded:
+                continue
             mixers = []
             for name, module in recorded:
                 m = module.last_mixer.float().reshape(-1, module.last_mixer.shape[-2], module.last_mixer.shape[-1]).cpu()
@@ -101,7 +107,7 @@ def main():
         "out_dir": args.out_dir, "hyper_conn_type": cfg["hyper_conn_type"], "iter": ckpt["iter_num"],
         "val_loss": ckpt["best_val_loss"] if isinstance(ckpt["best_val_loss"], float) else float(ckpt["best_val_loss"]),
         "layers": {name: stats(torch.cat(ms)) for name, ms in per_layer.items()},
-        "composite": {"fwd_gain": float(np.mean(composite_fwd)), "bwd_gain": float(np.mean(composite_bwd)), "sigma2": float(np.mean(composite_sigma2))},
+        "composite": {"fwd_gain": float(np.mean(composite_fwd)), "bwd_gain": float(np.mean(composite_bwd)), "sigma2": float(np.mean(composite_sigma2))} if recorded else None,
         "paired_val_loss": float(np.mean(paired_losses)),
         "paired_val_sem": float(np.std(paired_losses) / np.sqrt(len(paired_losses))),
         "paired_batches": args.batches,
@@ -113,7 +119,8 @@ def main():
     for name, s in report["layers"].items():
         print(f"{name:28s} {s['neg_mass']:6.3f} {s['dev_norm']:6.3f} {s['off_identity']:6.3f} {s['fwd_gain']:6.3f} {s['bwd_gain']:6.3f} {s['sigma2']:6.3f}")
     c = report["composite"]
-    print(f"composite: fwd {c['fwd_gain']:.3f} bwd {c['bwd_gain']:.3f} sigma2 {c['sigma2']:.3f}")
+    if c:
+        print(f"composite: fwd {c['fwd_gain']:.3f} bwd {c['bwd_gain']:.3f} sigma2 {c['sigma2']:.3f}")
 
 
 if __name__ == "__main__":
