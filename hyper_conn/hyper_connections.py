@@ -302,6 +302,8 @@ class HyperConnections(Module):
         alpha = dynamic_alpha + static_alpha
 
         alpha = self.split_fracs(alpha) # (batch, seq, fracs1, streams, fracs2, input + residual streams)
+        if getattr(self, 'record_mixers', False):
+            self.last_mixer = alpha.detach()[..., 0, :, 0, self.num_input_views:]   # (..., s, s) residual part per token
 
         # beta for weights from branch output back to residual streams
 

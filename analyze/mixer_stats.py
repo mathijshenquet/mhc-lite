@@ -45,7 +45,7 @@ def val_batches(dataset, block_size, batch_size, n, device, seed=0):
         yield x.to(device), y.to(device)
 
 
-RECORDING = ("ManifoldConstrainedHyperConnections", "MHCLite", "GDSMHyperConnections")
+RECORDING = ("HyperConnections", "ManifoldConstrainedHyperConnections", "MHCLite", "GDSMHyperConnections")
 
 
 def recorders(model):
