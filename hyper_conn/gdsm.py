@@ -61,18 +61,23 @@ def spectral_norm_exact(matrix):
     """sigma_max with the exact gradient u v^T; singular vectors detached (eigh of A^T A
     tolerates the repeated singular values of the identity init)."""
     with torch.no_grad():
-        _, vecs = torch.linalg.eigh(matrix.transpose(-1, -2).float() @ matrix.float())
-        right = vecs[..., :, -1].to(matrix.dtype)
+        _, vecs = torch.linalg.eigh(matrix.transpose(-1, -2) @ matrix)
+        right = vecs[..., :, -1]
         left = torch.einsum('...ij,...j->...i', matrix, right)
         left = left / left.norm(dim = -1, keepdim = True).clamp_min(1e-12)
     return torch.einsum('...i,...ij,...j->...', left, matrix, right)
 
 def gdsm(logits, gate):
-    """logits: (..., n, n) residual logits; gate: (...) raw gate logit.  Returns (..., n, n)."""
+    """logits: (..., n, n) residual logits; gate: (...) raw gate logit.  Returns (..., n, n).
+
+    Computed in fp32 with autocast off: eigh has no bf16 kernel, and under autocast the Gram
+    matmul would silently run in bf16."""
     n = logits.shape[-1]
-    centered = double_center(logits)
-    direction = centered / spectral_norm_exact(centered).clamp_min(1e-6)[..., None, None]
-    return 1.0 / n + gate.clamp(0.0, 1.0)[..., None, None] * direction
+    with torch.autocast(device_type = logits.device.type, enabled = False):
+        centered = double_center(logits.float())
+        direction = centered / spectral_norm_exact(centered).clamp_min(1e-6)[..., None, None]
+        out = 1.0 / n + gate.float().clamp(0.0, 1.0)[..., None, None] * direction
+    return out.to(logits.dtype)
 
 # main functions
 
