@@ -57,24 +57,36 @@ _GATE_INIT = 0.999   # clamp's gradient is zero exactly on its boundary
 def double_center(matrix):
     return matrix - matrix.mean(-1, keepdim = True) - matrix.mean(-2, keepdim = True) + matrix.mean((-1, -2), keepdim = True)
 
-def _jacobi_sym3(m, sweeps = 4):
-    """Eigen-decomposition of batched symmetric 3x3 matrices by cyclic Jacobi rotations: pure elementwise
-    tensor ops (no LAPACK/cuSOLVER call, so no host synchronisation and torch.compile fuses it), exact to fp32
-    after 3–4 sweeps.  Returns (eigenvalues (..., 3) unsorted, eigenvectors (..., 3, 3) as columns)."""
-    a = m.clone()
-    v = torch.eye(3, dtype = m.dtype, device = m.device).expand_as(a).clone()
-    for _ in range(sweeps):
-        for (p, q) in ((0, 1), (0, 2), (1, 2)):
-            apq = a[..., p, q]
-            app, aqq = a[..., p, p], a[..., q, q]
-            # rotation angle: tan(2θ) = 2 a_pq / (a_qq − a_pp); θ = 0 where a_pq is already 0
-            theta = 0.5 * torch.atan2(2 * apq, aqq - app)
-            c, s_ = torch.cos(theta), torch.sin(theta)
-            rot = torch.eye(3, dtype = m.dtype, device = m.device).expand_as(a).clone()
-            rot[..., p, p] = c; rot[..., q, q] = c; rot[..., p, q] = s_; rot[..., q, p] = -s_
-            a = rot.transpose(-1, -2) @ a @ rot
-            v = v @ rot
-    return torch.diagonal(a, dim1 = -2, dim2 = -1), v
+def _top_eigvec_sym3(m):
+    """Top eigenvalue and eigenvector of batched symmetric 3x3 matrices in closed form (Smith 1961 trigonometric
+    eigenvalues; eigenvector from the cross product of two rows of M − λI, picking the best-conditioned pair).
+    ~40 elementwise ops, no LAPACK/cuSOLVER call and no host sync.  At an exactly degenerate top eigenvalue any unit
+    vector of the eigenspace is valid; the cross products vanish there and a fixed fallback vector is used."""
+    # scale-normalise first: the trigonometric form loses fp32 precision when the entries are tiny (p³ underflows),
+    # and the eigenvector is scale-invariant anyway (the eigenvalue is only used through the vector here)
+    scale = m.flatten(-2).abs().amax(dim = -1).clamp_min(1e-30)[..., None, None]
+    m = m / scale
+    a00, a01, a02 = m[..., 0, 0], m[..., 0, 1], m[..., 0, 2]
+    a11, a12, a22 = m[..., 1, 1], m[..., 1, 2], m[..., 2, 2]
+    q = (a00 + a11 + a22) / 3
+    b00, b11, b22 = a00 - q, a11 - q, a22 - q
+    p2 = (b00 * b00 + b11 * b11 + b22 * b22 + 2 * (a01 * a01 + a02 * a02 + a12 * a12)) / 6
+    p = torch.sqrt(p2.clamp_min(1e-30))
+    # det(B)/2 with B = (M − qI)/p
+    det_b = (b00 * (b11 * b22 - a12 * a12) - a01 * (a01 * b22 - a12 * a02) + a02 * (a01 * a12 - b11 * a02)) / (p * p * p)
+    phi = torch.acos((det_b / 2).clamp(-1.0, 1.0)) / 3
+    lam = q + 2 * p * torch.cos(phi)                       # largest eigenvalue (of the scaled matrix)
+    # rows of M − λI
+    r0 = torch.stack([a00 - lam, a01, a02], dim = -1)
+    r1 = torch.stack([a01, a11 - lam, a12], dim = -1)
+    r2 = torch.stack([a02, a12, a22 - lam], dim = -1)
+    c01, c02, c12 = torch.cross(r0, r1, dim = -1), torch.cross(r0, r2, dim = -1), torch.cross(r1, r2, dim = -1)
+    n01, n02, n12 = c01.norm(dim = -1), c02.norm(dim = -1), c12.norm(dim = -1)
+    best = torch.where((n01 >= n02)[..., None] & (n01 >= n12)[..., None], c01, torch.where((n02 >= n12)[..., None], c02, c12))
+    norm = best.norm(dim = -1, keepdim = True)
+    fallback = torch.tensor([1.0, 0.0, 0.0], dtype = m.dtype, device = m.device).expand_as(best)
+    vec = torch.where(norm > 1e-12, best / norm.clamp_min(1e-30), fallback)
+    return lam * scale[..., 0, 0], vec
 
 
 _ONES_COMPLEMENT_BASIS = {}
@@ -92,13 +104,13 @@ def _ones_complement_basis(n, dtype, device):
 
 
 import os
-_SIGMA_IMPL = os.environ.get("GDSM_SIGMA", "jacobi")   # "jacobi" (sync-free, fuses under torch.compile) | "eigh"
+_SIGMA_IMPL = os.environ.get("GDSM_SIGMA", "closed")   # "closed" (sync-free closed form, fuses under torch.compile) | "eigh"
 
 
 def spectral_norm_exact(matrix, use_eigh = None):
     """sigma_max of a double-centred matrix with the exact gradient u v^T; singular vectors detached.
     The centred matrix annihilates 1, so A^T A restricted to the complement of 1 is (n−1)×(n−1); for n = 4 that
-    is a 3×3 symmetric eigenproblem solved by Jacobi rotations (no cuSOLVER call: `torch.linalg.eigh` on CUDA/MPS
+    is a 3×3 symmetric eigenproblem solved in closed form (no cuSOLVER call: `torch.linalg.eigh` on CUDA/MPS
     synchronises with the host to check convergence, 2 syncs per fold per step).  `use_eigh` keeps the old path.
     Values agree to 1e-6; gradients agree except at an exactly degenerate top pair (both pick an arbitrary but valid
     subgradient).  Eager on MPS the Jacobi path is ~4x slower than eigh; the win is on CUDA under compile."""
@@ -113,9 +125,7 @@ def spectral_norm_exact(matrix, use_eigh = None):
             q = _ones_complement_basis(n, matrix.dtype, matrix.device)
             gram = matrix.transpose(-1, -2) @ matrix
             small = q.transpose(-1, -2) @ gram @ q
-            values, vecs = _jacobi_sym3(small)
-            top = values.argmax(dim = -1)
-            right_small = torch.gather(vecs, -1, top[..., None, None].expand(*vecs.shape[:-1], 1))[..., 0]
+            _, right_small = _top_eigvec_sym3(small)
             right = torch.einsum('ij,...j->...i', q, right_small)
         left = torch.einsum('...ij,...j->...i', matrix, right)
         left = left / left.norm(dim = -1, keepdim = True).clamp_min(1e-12)
