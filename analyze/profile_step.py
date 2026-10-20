@@ -36,41 +36,46 @@ def main():
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--act_ckpt", action="store_true")
     ap.add_argument("--trace", default="")
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
     args = ap.parse_args()
+    dev = args.device
     torch.manual_seed(0)
     cfg = GPTConfig(block_size=args.block_size, vocab_size=50304, bias=False, dropout=0.0, hyper_conn_n=args.hyper_conn_n,
                     hyper_conn_type=args.hyper_conn_type, act_ckpt=args.act_ckpt, **load_size(args.size))
-    model = GPT(cfg).cuda().train()
-    opt = model.configure_optimizers(0.1, 3e-4, (0.9, 0.95), "cuda")
+    model = GPT(cfg).to(dev).train()
+    opt = model.configure_optimizers(0.1, 3e-4, (0.9, 0.95), "cuda" if dev == "cuda" else "cpu")
     step_model = torch.compile(model) if args.compile else model
-    x = torch.randint(0, 50304, (args.batch_size, args.block_size), device="cuda"); y = torch.roll(x, -1, 1)
+    x = torch.randint(0, 50304, (args.batch_size, args.block_size), device=dev); y = torch.roll(x, -1, 1)
 
     def step():
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast(dev if dev != "mps" else "cpu", dtype=torch.bfloat16, enabled=dev != "mps"):
             _, loss = step_model(x, y)
         loss.backward(); opt.step(); opt.zero_grad(set_to_none=True)
 
     for _ in range(3):
         step()
-    torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats(); t0 = time.time()
+    sync = torch.cuda.synchronize if dev == "cuda" else (torch.mps.synchronize if dev == "mps" else (lambda: None))
+    sync(); (torch.cuda.reset_peak_memory_stats() if dev == "cuda" else None); t0 = time.time()
     for _ in range(args.steps):
         step()
-    torch.cuda.synchronize(); dt = time.time() - t0
+    sync(); dt = time.time() - t0
     toks = args.steps * args.batch_size * args.block_size
     print(f"{args.size} {args.hyper_conn_type} mb={args.batch_size} compile={args.compile} act_ckpt={args.act_ckpt}: "
-          f"{toks / dt / 1000:.1f}k tok/s, {dt / args.steps * 1000:.0f} ms/step, peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GB")
+          f"{toks / dt / 1000:.1f}k tok/s, {dt / args.steps * 1000:.0f} ms/step, peak {(torch.cuda.max_memory_allocated() if dev == 'cuda' else (torch.mps.driver_allocated_memory() if dev == 'mps' else 0)) / 2**30:.1f} GB")
     from torch.profiler import ProfilerActivity, profile
-    with profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU], record_shapes=False) as prof:
+    acts = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if dev == "cuda" else [])
+    with profile(activities=acts, record_shapes=False) as prof:
         for _ in range(3):
             step()
-        torch.cuda.synchronize()
+        sync()
     if args.trace:
         prof.export_chrome_trace(args.trace)
     rows = prof.key_averages()
-    total = sum(r.self_device_time_total for r in rows) or 1
-    print(f"top operators by self CUDA time (3 steps), share of {total / 1e3 / 3:.0f} ms/step:")
-    for r in sorted(rows, key=lambda r: -r.self_device_time_total)[:25]:
-        print(f"  {r.self_device_time_total / total * 100:5.1f}%  {r.key[:90]}")
+    key = (lambda r: r.self_device_time_total) if dev == "cuda" else (lambda r: r.self_cpu_time_total)
+    total = sum(key(r) for r in rows) or 1
+    print(f"top operators by self {'CUDA' if dev == 'cuda' else 'CPU (dispatch)'} time (3 steps), share of {total / 1e3 / 3:.0f} ms/step; count = calls per 3 steps:")
+    for r in sorted(rows, key=lambda r: -key(r))[:25]:
+        print(f"  {key(r) / total * 100:5.1f}%  n={r.count:6d}  {r.key[:80]}")
 
 
 if __name__ == "__main__":

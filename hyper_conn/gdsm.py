@@ -57,12 +57,66 @@ _GATE_INIT = 0.999   # clamp's gradient is zero exactly on its boundary
 def double_center(matrix):
     return matrix - matrix.mean(-1, keepdim = True) - matrix.mean(-2, keepdim = True) + matrix.mean((-1, -2), keepdim = True)
 
-def spectral_norm_exact(matrix):
-    """sigma_max with the exact gradient u v^T; singular vectors detached (eigh of A^T A
-    tolerates the repeated singular values of the identity init)."""
+def _jacobi_sym3(m, sweeps = 4):
+    """Eigen-decomposition of batched symmetric 3x3 matrices by cyclic Jacobi rotations: pure elementwise
+    tensor ops (no LAPACK/cuSOLVER call, so no host synchronisation and torch.compile fuses it), exact to fp32
+    after 3–4 sweeps.  Returns (eigenvalues (..., 3) unsorted, eigenvectors (..., 3, 3) as columns)."""
+    a = m.clone()
+    v = torch.eye(3, dtype = m.dtype, device = m.device).expand_as(a).clone()
+    for _ in range(sweeps):
+        for (p, q) in ((0, 1), (0, 2), (1, 2)):
+            apq = a[..., p, q]
+            app, aqq = a[..., p, p], a[..., q, q]
+            # rotation angle: tan(2θ) = 2 a_pq / (a_qq − a_pp); θ = 0 where a_pq is already 0
+            theta = 0.5 * torch.atan2(2 * apq, aqq - app)
+            c, s_ = torch.cos(theta), torch.sin(theta)
+            rot = torch.eye(3, dtype = m.dtype, device = m.device).expand_as(a).clone()
+            rot[..., p, p] = c; rot[..., q, q] = c; rot[..., p, q] = s_; rot[..., q, p] = -s_
+            a = rot.transpose(-1, -2) @ a @ rot
+            v = v @ rot
+    return torch.diagonal(a, dim1 = -2, dim2 = -1), v
+
+
+_ONES_COMPLEMENT_BASIS = {}
+
+
+def _ones_complement_basis(n, dtype, device):
+    """Orthonormal basis Q (n × n−1) of the complement of the all-ones vector (cached per dtype/device)."""
+    key = (n, dtype, device)
+    if key not in _ONES_COMPLEMENT_BASIS:
+        eye = torch.eye(n, dtype = torch.float64)
+        ones = torch.ones(n, 1, dtype = torch.float64) / n ** 0.5
+        q, _ = torch.linalg.qr(torch.cat([ones, eye[:, : n - 1]], dim = 1))
+        _ONES_COMPLEMENT_BASIS[key] = q[:, 1:].to(dtype = dtype, device = device)
+    return _ONES_COMPLEMENT_BASIS[key]
+
+
+import os
+_SIGMA_IMPL = os.environ.get("GDSM_SIGMA", "jacobi")   # "jacobi" (sync-free, fuses under torch.compile) | "eigh"
+
+
+def spectral_norm_exact(matrix, use_eigh = None):
+    """sigma_max of a double-centred matrix with the exact gradient u v^T; singular vectors detached.
+    The centred matrix annihilates 1, so A^T A restricted to the complement of 1 is (n−1)×(n−1); for n = 4 that
+    is a 3×3 symmetric eigenproblem solved by Jacobi rotations (no cuSOLVER call: `torch.linalg.eigh` on CUDA/MPS
+    synchronises with the host to check convergence, 2 syncs per fold per step).  `use_eigh` keeps the old path.
+    Values agree to 1e-6; gradients agree except at an exactly degenerate top pair (both pick an arbitrary but valid
+    subgradient).  Eager on MPS the Jacobi path is ~4x slower than eigh; the win is on CUDA under compile."""
+    n = matrix.shape[-1]
+    if use_eigh is None:
+        use_eigh = _SIGMA_IMPL == "eigh"
     with torch.no_grad():
-        _, vecs = torch.linalg.eigh(matrix.transpose(-1, -2) @ matrix)
-        right = vecs[..., :, -1]
+        if use_eigh or n != 4:
+            _, vecs = torch.linalg.eigh(matrix.transpose(-1, -2) @ matrix)
+            right = vecs[..., :, -1]
+        else:
+            q = _ones_complement_basis(n, matrix.dtype, matrix.device)
+            gram = matrix.transpose(-1, -2) @ matrix
+            small = q.transpose(-1, -2) @ gram @ q
+            values, vecs = _jacobi_sym3(small)
+            top = values.argmax(dim = -1)
+            right_small = torch.gather(vecs, -1, top[..., None, None].expand(*vecs.shape[:-1], 1))[..., 0]
+            right = torch.einsum('ij,...j->...i', q, right_small)
         left = torch.einsum('...ij,...j->...i', matrix, right)
         left = left / left.norm(dim = -1, keepdim = True).clamp_min(1e-12)
     return torch.einsum('...i,...ij,...j->...', left, matrix, right)
