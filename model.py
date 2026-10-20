@@ -12,6 +12,7 @@ import inspect
 from dataclasses import dataclass
 
 import torch
+import torch.utils.checkpoint
 import torch.nn as nn
 from torch.nn import functional as F
 from hyper_conn import hyper_conn_init_func
@@ -99,6 +100,7 @@ class Block(nn.Module):
         self.init_hc = init_hc
         self.expand_stream = expand_stream
         self.reduce_stream = reduce_stream
+        self.act_ckpt = config.act_ckpt
 
         self.branch_attn = nn.Sequential(
             LayerNorm(config.n_embd, bias=config.bias), 
@@ -125,8 +127,12 @@ class Block(nn.Module):
         
         if self.init_hc is not None:
             assert exp_s is not None and rdc_s is not None
-            x = self.hc_attn(x)
-            x = self.hc_mlp(x)
+            if self.act_ckpt and self.training and torch.is_grad_enabled():
+                x = torch.utils.checkpoint.checkpoint(self.hc_attn, x, use_reentrant = False)
+                x = torch.utils.checkpoint.checkpoint(self.hc_mlp, x, use_reentrant = False)
+            else:
+                x = self.hc_attn(x)
+                x = self.hc_mlp(x)
         else:
             x = x + self.branch_attn(x)
             x = x + self.branch_mlp(x)
@@ -143,6 +149,7 @@ class GPTConfig:
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     hyper_conn_n: int = 1
     hyper_conn_type: str = "none"
+    act_ckpt: bool = False   # recompute each hyper-connection fold in backward (memory for time; the L model does not fit MB=16 on 32 GB otherwise)
 
 class GPT(nn.Module):
 
