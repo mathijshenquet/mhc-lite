@@ -86,6 +86,7 @@ beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 resume_optimizer = True # on resume, also restore the optimizer state (False: fresh moments; needed when the param groups changed)
+freeze_scalars = False # freeze the hyper-connection gain scalars (ablation: is the instability carried by them?)
 scalar_lr_mult = 1.0 # learning-rate multiplier for the hyper-connection gain scalars (own optimizer group)
 clip_scalars_separately = False # clip the hyper-connection gain scalars as their own group: a few hundred scalars with a large gradient must not throttle the rest of the model (GDSM-L, 2026-10-20)
 # learning rate decay settings
@@ -263,6 +264,11 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
+if freeze_scalars:
+    frozen = [n for n, p in model.named_parameters() if n.endswith("_scale") and p.dim() <= 1]
+    for n, p in model.named_parameters():
+        if n in frozen: p.requires_grad_(False)
+    print(f"froze {len(frozen)} gain scalars")
 optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type, scalar_lr_mult=scalar_lr_mult)
 if init_from == 'resume' and resume_optimizer:
     try:
@@ -276,6 +282,8 @@ if init_from == 'resume' and resume_optimizer:
         flat_ids = [i for g in saved['param_groups'] for i in g['params']]
         assert len(flat_ids) == len(old_params), (len(flat_ids), len(old_params))
         by_param = {old_params[k]: saved['state'][i] for k, i in enumerate(flat_ids) if i in saved['state']}
+        in_groups = {id(p) for g in optimizer.param_groups for p in g['params']}
+        by_param = {p: st for p, st in by_param.items() if id(p) in in_groups}   # frozen params have no optimizer state
         for p, st in by_param.items():
             optimizer.state[p] = {k: (v.to(p.device) if torch.is_tensor(v) else v) for k, v in st.items()}
         print(f"restored moments for {len(by_param)} parameter tensors")
