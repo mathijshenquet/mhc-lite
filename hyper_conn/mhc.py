@@ -336,6 +336,8 @@ class ManifoldConstrainedHyperConnections(Module):
         # split out streams
 
         residuals = rearrange(residuals, '(b s) ... d -> b ... s d', s = streams)
+        if getattr(self, 'record_mixers', False):
+            self.last_stream_norm = residuals.detach().float().norm(dim = -1)   # (..., s) per-token stream norms
 
         # norm
         normed = rearrange(residuals, 'b ... s d -> b ... (s d)', s = streams)
@@ -364,6 +366,8 @@ class ManifoldConstrainedHyperConnections(Module):
         alpha_pre, alpha_residual = alpha[..., :self.num_input_views], alpha[..., self.num_input_views:]
 
         alpha_pre = alpha_pre.sigmoid() 
+        if getattr(self, 'record_mixers', False):
+            self.last_pre = alpha_pre.detach()[..., :, 0, 0]   # (..., s) read weight per stream (view 0)
 
         alpha_residual = rearrange(alpha_residual, '... f s g t -> ... f g s t')
         alpha_residual = sinkhorn_knopps(alpha_residual, self.sinkhorn_iters)
@@ -386,6 +390,8 @@ class ManifoldConstrainedHyperConnections(Module):
 
             beta = dynamic_beta + static_beta
             beta = beta.sigmoid() * 2 # sigmoid * 2 for "H_post"
+            if getattr(self, 'record_mixers', False):
+                self.last_post = beta.detach()[..., :, 0]   # (..., s) write weight per stream
 
         mix_h = einsum(alpha, residuals, '... f1 s f2 t, ... f1 s d -> ... f2 t d')
 

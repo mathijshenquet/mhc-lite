@@ -341,6 +341,8 @@ class MHCLite(Module):
         # split out streams
 
         residuals = rearrange(residuals, '(b s) ... d -> b ... s d', s = streams)
+        if getattr(self, 'record_mixers', False):
+            self.last_stream_norm = residuals.detach().float().norm(dim = -1)   # (..., s) per-token stream norms
 
         # norm
         normed = rearrange(residuals, 'b ... s d -> b ... (s d)', s = streams)
@@ -369,6 +371,8 @@ class MHCLite(Module):
         alpha_pre = self.pre_branch_scale * dynamic_pre + static_pre  # (..., s*v)
         alpha_pre = rearrange(alpha_pre, '... (f s v) -> ... s f v', v = self.num_input_views, f = self.num_fracs)
         alpha_pre = alpha_pre.sigmoid()
+        if getattr(self, 'record_mixers', False):
+            self.last_pre = alpha_pre.detach()[..., :, 0, 0]   # (..., s) read weight per stream (view 0)
 
         # the alpha is now split and "manifold constrained" with sinkhorn and sigmoid
 
@@ -387,6 +391,8 @@ class MHCLite(Module):
 
             beta = dynamic_beta + static_beta
             beta = beta.sigmoid() * 2 # sigmoid * 2 for "H_post"
+            if getattr(self, 'record_mixers', False):
+                self.last_post = beta.detach()[..., :, 0]   # (..., s) write weight per stream
 
         mix_h = einsum(alpha, residuals, '... f1 s f2 t, ... f1 s d -> ... f2 t d')
 

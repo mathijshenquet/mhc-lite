@@ -287,6 +287,8 @@ class HyperConnections(Module):
         # split out streams
 
         residuals = rearrange(residuals, '(b s) ... d -> b ... s d', s = streams)
+        if getattr(self, 'record_mixers', False):
+            self.last_stream_norm = residuals.detach().float().norm(dim = -1)   # (..., s) per-token stream norms
 
         # norm
 
@@ -304,6 +306,7 @@ class HyperConnections(Module):
         alpha = self.split_fracs(alpha) # (batch, seq, fracs1, streams, fracs2, input + residual streams)
         if getattr(self, 'record_mixers', False):
             self.last_mixer = alpha.detach()[..., 0, :, 0, self.num_input_views:]   # (..., s, s) residual part per token
+            self.last_pre = alpha.detach()[..., 0, :, 0, 0]   # (..., s) read weight per stream (view 0)
 
         # beta for weights from branch output back to residual streams
 
@@ -320,6 +323,8 @@ class HyperConnections(Module):
             static_beta = rearrange(self.static_beta, '... (s f) -> ... s f', s = streams)
 
             beta = dynamic_beta + static_beta
+            if getattr(self, 'record_mixers', False):
+                self.last_post = beta.detach()[..., :, 0]   # (..., s) write weight per stream
 
         mix_h = einsum(alpha, residuals, '... f1 s f2 t, ... f1 s d -> ... f2 t d')
 

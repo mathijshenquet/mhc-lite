@@ -26,8 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model import GPT, GPTConfig  # noqa: E402
 
 
-def load(out_dir, device):
-    ckpt = torch.load(os.path.join(out_dir, "ckpt.pt"), map_location=device, weights_only=False)
+def load(out_dir, device, ckpt_name="ckpt.pt"):
+    ckpt = torch.load(os.path.join(out_dir, ckpt_name), map_location=device, weights_only=False)
     model = GPT(GPTConfig(**ckpt["model_args"]))
     state = {k.removeprefix("_orig_mod."): v for k, v in ckpt["model"].items()}
     model.load_state_dict(state)
