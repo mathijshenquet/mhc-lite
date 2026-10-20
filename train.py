@@ -83,6 +83,7 @@ weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
+clip_scalars_separately = False # clip the hyper-connection gain scalars as their own group: a few hundred scalars with a large gradient must not throttle the rest of the model (GDSM-L, 2026-10-20)
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
@@ -380,7 +381,13 @@ while True:
     grad_norm = -1.
     if grad_clip > 0.:
         scaler.unscale_(optimizer)
-        ret_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        if clip_scalars_separately:
+            scalar_gains = [p for n, p in raw_model.named_parameters() if n.endswith("_scale") and p.dim() <= 1]
+            rest = [p for n, p in raw_model.named_parameters() if not (n.endswith("_scale") and p.dim() <= 1)]
+            torch.nn.utils.clip_grad_norm_(scalar_gains, grad_clip)
+            ret_grad_norm = torch.nn.utils.clip_grad_norm_(rest, grad_clip)
+        else:
+            ret_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         grad_norm = float(ret_grad_norm)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
