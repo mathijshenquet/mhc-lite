@@ -42,6 +42,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # ----- hyper conn start -----
 hyper_conn_type = "none" # none, hc, mhc, mhc_lite
 gdsm_logit_grad_scale = 1.0 # GDSM: damp the gradient into the residual logits (forward unchanged)
+gdsm_iso_weight = 0.0 # GDSM: isometry prior weight (minor singular values of the deviation -> 1)
 act_ckpt = False # activation checkpointing of the hyper-connection folds
 hyper_conn_n = 1 # num_streams
 
@@ -204,6 +205,7 @@ model_args = dict(
     hyper_conn_type=hyper_conn_type,
     act_ckpt=act_ckpt,
     gdsm_logit_grad_scale=gdsm_logit_grad_scale,
+    gdsm_iso_weight=gdsm_iso_weight,
 ) # start with model_args from command line
 if master_process:
     print ("="*100)

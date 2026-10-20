@@ -150,6 +150,7 @@ class GPTConfig:
     hyper_conn_n: int = 1
     hyper_conn_type: str = "none"
     gdsm_logit_grad_scale: float = 1.0   # GDSM only: gradient damping into the residual logits
+    gdsm_iso_weight: float = 0.0         # GDSM only: isometry prior weight on the deviation's minor singular values
     act_ckpt: bool = False   # recompute each hyper-connection fold in backward (memory for time; the L model does not fit MB=16 on 32 GB otherwise)
 
 class GPT(nn.Module):
@@ -163,7 +164,7 @@ class GPT(nn.Module):
         init_hc, expand_stream, reduce_stream = hyper_conn_init_func(
             config.hyper_conn_type , 
             config.hyper_conn_n , 
-            **({"logit_grad_scale": config.gdsm_logit_grad_scale} if config.hyper_conn_type == "gdsm" else {}),
+            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight} if config.hyper_conn_type == "gdsm" else {}),
         )
         self.expand_stream = expand_stream
         self.reduce_stream = reduce_stream
@@ -241,6 +242,10 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            if self.config.hyper_conn_type == "gdsm" and self.config.gdsm_iso_weight > 0:
+                penalties = [m.iso_penalty for n, m in self.named_modules() if n.endswith(("hc_attn", "hc_mlp")) and getattr(m, "iso_penalty", None) is not None]
+                if penalties:
+                    loss = loss + self.config.gdsm_iso_weight * torch.stack(penalties).mean()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim

@@ -131,6 +131,32 @@ def spectral_norm_exact(matrix, use_eigh = None):
         left = left / left.norm(dim = -1, keepdim = True).clamp_min(1e-12)
     return torch.einsum('...i,...ij,...j->...', left, matrix, right)
 
+def minor_singular_ratios(centered):
+    """For double-centred (..., 4, 4) logits A': the two minor singular values of A' divided by σ_max(A'), i.e. the
+    singular values of the realised deviation B − J/n on 1⊥ other than the top one (which is 1).  Closed form
+    (trigonometric eigenvalues of the scale-normalised 3×3 Gram on the complement of 1); no solver call."""
+    n = centered.shape[-1]
+    q = _ones_complement_basis(n, centered.dtype, centered.device)
+    gram = centered.transpose(-1, -2) @ centered
+    m = q.transpose(-1, -2) @ gram @ q
+    scale = m.flatten(-2).abs().amax(dim = -1).clamp_min(1e-30)[..., None, None]
+    m = m / scale
+    a00, a01, a02, a11, a12, a22 = m[..., 0, 0], m[..., 0, 1], m[..., 0, 2], m[..., 1, 1], m[..., 1, 2], m[..., 2, 2]
+    tr3 = (a00 + a11 + a22) / 3
+    b00, b11, b22 = a00 - tr3, a11 - tr3, a22 - tr3
+    p2 = (b00 * b00 + b11 * b11 + b22 * b22 + 2 * (a01 * a01 + a02 * a02 + a12 * a12)) / 6
+    pp = torch.sqrt(p2.clamp_min(1e-30))
+    det_b = (b00 * (b11 * b22 - a12 * a12) - a01 * (a01 * b22 - a12 * a02) + a02 * (a01 * a12 - b11 * a02)) / (pp * pp * pp)
+    phi = torch.acos((det_b / 2).clamp(-1.0, 1.0)) / 3
+    two_pi_3 = 2.0943951023931953
+    lam = torch.stack([tr3 + 2 * pp * torch.cos(phi), tr3 + 2 * pp * torch.cos(phi + two_pi_3), tr3 + 2 * pp * torch.cos(phi + 2 * two_pi_3)], dim = -1).clamp_min(0.0)
+    sv = torch.sqrt(lam)
+    top = sv.amax(dim = -1, keepdim = True).clamp_min(1e-12)
+    ratios = sv / top
+    # drop the top one (ratio 1): keep the two smallest
+    return ratios.sort(dim = -1).values[..., :2]
+
+
 def gdsm(logits, gate):
     """logits: (..., n, n) residual logits; gate: (...) raw gate logit.  Returns (..., n, n).
 
@@ -275,6 +301,7 @@ class GDSMHyperConnections(Module):
         *,
         dim,
         logit_grad_scale = 1.0,
+        iso_weight = 0.0,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -351,6 +378,8 @@ class GDSMHyperConnections(Module):
         self.static_gate = nn.Parameter(torch.full((num_fracs,), _GATE_INIT))
         self.gate_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.logit_grad_scale = logit_grad_scale
+        self.iso_weight = iso_weight
+        self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
 
@@ -464,6 +493,12 @@ class GDSMHyperConnections(Module):
         # normed is (..., f, s·d); one gate logit per frac from its own slice → (..., f)
         gate = gate_logits.diagonal(dim1 = -2, dim2 = -1) * self.gate_scale + self.static_gate
         gate = gate[..., :, None]                                                     # ... f g(=1 broadcast)
+        if self.iso_weight > 0:
+            # isometry prior: push the deviation's minor singular values toward 1 (an orthogonal map on 1⊥, like
+            # the permutations mHC-lite freezes into at depth), keeping the mixer signed and exact
+            with torch.autocast(device_type = alpha_residual.device.type, enabled = False):
+                ratios = minor_singular_ratios(double_center(alpha_residual.float()))
+            self.iso_penalty = (1.0 - ratios).pow(2).sum(-1).mean()
         if getattr(self, 'record_mixers', False):
             with torch.no_grad():   # raw scale of the centred logits before normalisation: the 1/σ in the Jacobian
                 self.last_raw_sigma = spectral_norm_exact(double_center(alpha_residual.float()))[..., 0, 0]
