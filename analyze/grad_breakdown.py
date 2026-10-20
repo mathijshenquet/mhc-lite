@@ -13,9 +13,11 @@ from analyze.mixer_stats import load, val_batches  # noqa: E402
 
 
 def group(name):
+    if "branch_attn" in name:
+        return "attn"
+    if "branch_mlp" in name:
+        return "mlp"
     if "hc_attn" in name or "hc_mlp" in name:
-        if "branch" in name:
-            return "attn" if "attn" in name.split("branch")[0] else "mlp"
         for key in ("static_alpha", "dynamic_alpha", "dynamic_gate", "static_gate", "static_beta", "dynamic_beta", "norm", "scale"):
             if key in name:
                 return f"hc.{key}"
