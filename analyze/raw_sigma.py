@@ -28,7 +28,7 @@ def main():
             with torch.autocast(device_type="cuda" if args.device.startswith("cuda") else "cpu", dtype=torch.bfloat16):
                 model(x, y)
             for n, m in rec:
-                sig[n].append(m.last_raw_sigma.flatten().cpu()); gate[n].append(m.last_raw_gate.flatten().cpu())
+                sig[n].append(m.last_raw_sigma.float().flatten().cpu()); gate[n].append(m.last_raw_gate.float().flatten().cpu())
     print(f"{cfg['hyper_conn_type']} iter {ckpt['iter_num']}: raw σ_max(A') per token;  fold: median  p1  min  frac<0.1  frac<0.3 | gate median min")
     allsig = []
     for n in sig:
