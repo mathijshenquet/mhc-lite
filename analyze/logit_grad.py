@@ -24,7 +24,9 @@ def realise(module, logits):
         return gdsm(logits, gate)
     if kind == "MHCLite":
         from einops import einsum
-        return einsum(torch.softmax(logits, dim=-1), module.perms.to(logits.dtype), '... r, r i j -> ... i j')
+        from hyper_conn.mhc_lite import get_all_permutations
+        perms = get_all_permutations(module.num_residual_streams).to(logits.device, logits.dtype)
+        return einsum(torch.softmax(logits, dim=-1), perms, '... r, r i j -> ... i j')
     if kind == "ManifoldConstrainedHyperConnections":
         from hyper_conn.mhc import sinkhorn_knopps
         return sinkhorn_knopps(logits, module.sinkhorn_iters)
