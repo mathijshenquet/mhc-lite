@@ -44,7 +44,7 @@ def main():
     def hvp(vec):
         return torch.autograd.grad(grads, params, grad_outputs=vec, retain_graph=True)
 
-    def power(precond, mask=None):
+    def power(precond, mask=None, shift=0.0):
         v = [torch.randn_like(p) for p in params]
         if mask is not None:
             v = [vi if m else torch.zeros_like(vi) for vi, m in zip(v, mask)]
@@ -56,12 +56,18 @@ def main():
             w = [h.float() * di for h, di in zip(hu, dinv)] if precond else [h.float() for h in hu]
             if mask is not None:
                 w = [wi if m else torch.zeros_like(wi) for wi, m in zip(w, mask)]
+            if shift:
+                w = [wi + shift * vi for wi, vi in zip(w, v)]
             lam = sum((wi * vi).sum() for wi, vi in zip(w, v)).item()
             nrm = torch.sqrt(sum((wi ** 2).sum() for wi in w)); v = [wi / nrm for wi in w]
-        return lam
+        return lam - shift
 
     lr = lr_at(ckpt["iter_num"], cfg)
-    full = power(True); scal = power(True, scalar_mask); raw = power(False)
+    def top(precond, mask=None):
+        lam = power(precond, mask)
+        # power iteration finds the largest |λ|; if that is negative, shift to get the largest algebraic one
+        return power(precond, mask, shift=-lam * 1.0 + 1e-12) if lam < 0 else lam
+    full = top(True); scal = top(True, scalar_mask); raw = top(False)
     print(f"{ckpt['model_args']['hyper_conn_type']} iter {ckpt['iter_num']} lr {lr:.2e}: λ(P⁻¹H) full {full:.3e} | gain scalars only {scal:.3e} | threshold 38/lr {38 / lr:.3e} | raw λ(H) {raw:.3e}")
 
 
