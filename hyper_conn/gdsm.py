@@ -303,6 +303,7 @@ class GDSMHyperConnections(Module):
         logit_grad_scale = 1.0,
         iso_weight = 0.0,
         static_res = False,
+        read_softcap = 0.0,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -381,6 +382,7 @@ class GDSMHyperConnections(Module):
         self.logit_grad_scale = logit_grad_scale
         self.iso_weight = iso_weight
         self.static_res = static_res
+        self.read_softcap = read_softcap
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -487,6 +489,11 @@ class GDSMHyperConnections(Module):
         # (..., 1, s, 1, v) / (..., 1, s, 1, s)
         alpha_pre, alpha_residual = alpha[..., :self.num_input_views], alpha[..., self.num_input_views:]
 
+        if self.read_softcap > 0:
+            # soft cap on the read logits (c·tanh(x/c)): the read sigmoid can no longer saturate, its gradient never
+            # vanishes (GDSM-L's reads saturated 1% → 21% between steps 500 and 1000, 2026-10-20)
+            c = self.read_softcap
+            alpha_pre = c * torch.tanh(alpha_pre / c)
         alpha_pre = alpha_pre.sigmoid() 
         if getattr(self, 'record_mixers', False):
             self.last_pre = alpha_pre.detach()[..., :, 0, 0]   # (..., s) read weight per stream (view 0)

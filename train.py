@@ -86,6 +86,7 @@ beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 resume_optimizer = True # on resume, also restore the optimizer state (False: fresh moments; needed when the param groups changed)
+gdsm_read_softcap = 0.0 # GDSM: soft cap on the read logits so the read sigmoid cannot saturate
 gdsm_static_res = False # GDSM bisection: residual mixing without per-token dynamics
 hc_reduce_mean = False # average the n streams at the output (fork default sums them: logits n× at init)
 fixed_batch = False # overfit test: every training micro-batch is the same seeded batch
@@ -230,6 +231,7 @@ model_args = dict(
     gdsm_iso_weight=gdsm_iso_weight,
     hc_reduce_mean=hc_reduce_mean,
     gdsm_static_res=gdsm_static_res,
+    gdsm_read_softcap=gdsm_read_softcap,
 ) # start with model_args from command line
 if master_process:
     print ("="*100)
