@@ -397,6 +397,12 @@ class MHCLite(Module):
                 self.last_post = beta.detach()[..., :, 0]   # (..., s) write weight per stream
 
         mix_h = einsum(alpha, residuals, '... f1 s f2 t, ... f1 s d -> ... f2 t d')
+        if getattr(self, 'record_cancel', False):
+            # inputs and outputs of the stream mixing, for the cancellation analysis (analyze/cancellation.py)
+            self.last_resid_in = residuals.detach()
+            if mix_h.requires_grad:
+                mix_h.retain_grad()
+            self.last_mix_out = mix_h
 
         if self.num_input_views == 1:
             branch_input, residuals = mix_h[..., 0, :], mix_h[..., 1:, :]
