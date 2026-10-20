@@ -18,7 +18,7 @@ def group(name):
     if "branch_mlp" in name:
         return "mlp"
     if "hc_attn" in name or "hc_mlp" in name:
-        for key in ("static_alpha", "dynamic_alpha", "dynamic_gate", "static_gate", "static_beta", "dynamic_beta", "norm", "scale"):
+        for key in ("static_alpha", "dynamic_alpha", "dynamic_gate", "static_gate", "static_beta", "dynamic_beta", "norm", "gate_scale", "pre_branch_scale", "residual_scale", "h_post_scale", "dynamic_alpha_scale", "dynamic_beta_scale", "scale"):
             if key in name:
                 return f"hc.{key}"
         return "hc.other"
