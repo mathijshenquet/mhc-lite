@@ -83,6 +83,7 @@ weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
+scalar_lr_mult = 1.0 # learning-rate multiplier for the hyper-connection gain scalars (own optimizer group)
 clip_scalars_separately = False # clip the hyper-connection gain scalars as their own group: a few hundred scalars with a large gradient must not throttle the rest of the model (GDSM-L, 2026-10-20)
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
@@ -257,7 +258,7 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
-optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type, scalar_lr_mult=scalar_lr_mult)
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
 checkpoint = None # free up memory
@@ -317,7 +318,7 @@ while True:
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+        param_group['lr'] = lr * param_group.get('lr_mult', 1.0)
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
