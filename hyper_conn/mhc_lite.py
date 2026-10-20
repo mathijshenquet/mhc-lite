@@ -361,6 +361,8 @@ class MHCLite(Module):
             perm_mats[(streams, dev)] = _perm_mats
         perms = perm_mats[(streams, dev)]
         res_coeff = self.residual_scale * dynamic_residual + static_residual
+        if getattr(self, 'record_mixers', False) and res_coeff.requires_grad:
+            res_coeff.retain_grad(); self.last_logits = res_coeff   # pre-softmax permutation logits (..., n!)
         res_coeff = torch.softmax(res_coeff, dim = -1)
         alpha_residual = einsum(res_coeff, perms, '... r, r i j-> ... i j') # (..., s, s)
         alpha_residual = self.split_fracs(alpha_residual) # (..., f, s, f, s)

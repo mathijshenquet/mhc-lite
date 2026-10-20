@@ -370,6 +370,8 @@ class ManifoldConstrainedHyperConnections(Module):
             self.last_pre = alpha_pre.detach()[..., :, 0, 0]   # (..., s) read weight per stream (view 0)
 
         alpha_residual = rearrange(alpha_residual, '... f s g t -> ... f g s t')
+        if getattr(self, 'record_mixers', False) and alpha_residual.requires_grad:
+            alpha_residual.retain_grad(); self.last_logits = alpha_residual   # pre-Sinkhorn residual logits
         alpha_residual = sinkhorn_knopps(alpha_residual, self.sinkhorn_iters)
         alpha_residual = rearrange(alpha_residual, '... f g s t -> ... f s g t')
         if getattr(self, 'record_mixers', False):
