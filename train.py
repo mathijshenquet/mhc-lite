@@ -86,6 +86,9 @@ beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 resume_optimizer = True # on resume, also restore the optimizer state (False: fresh moments; needed when the param groups changed)
+hc_reduce_mean = False # average the n streams at the output (fork default sums them: logits n× at init)
+fixed_batch = False # overfit test: every training micro-batch is the same seeded batch
+update_ratio_interval = 0 # >0: log per-block Adam update/weight ratio every N iters
 collapse_interval = 0 # >0: log stream-collapse metrics (pairwise stream cosine, effective #streams) every N iters
 ckpt_interval = 0 # >0: also save ckpt-<iter>.pt every N iters (no eval needed)
 sharpness_interval = 0 # >0: measure λ_max(P^-1 H) every N iters on the uncompiled model and log it next to 38/lr
@@ -160,7 +163,20 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 # poor man's data loader
 data_dir = os.path.join('data', dataset)
 
+_fixed_batch_cache = {}
 def get_batch(split):
+    if fixed_batch and split == 'train':
+        if 'b' not in _fixed_batch_cache:
+            _g = torch.Generator().manual_seed(12345)
+            _d = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+            _ix = torch.randint(len(_d) - block_size, (batch_size,), generator=_g)
+            _x = torch.stack([torch.from_numpy((_d[i:i+block_size]).astype(np.int64)) for i in _ix])
+            _y = torch.stack([torch.from_numpy((_d[i+1:i+1+block_size]).astype(np.int64)) for i in _ix])
+            _fixed_batch_cache['b'] = (_x.pin_memory().to(device, non_blocking=True), _y.pin_memory().to(device, non_blocking=True)) if device_type == 'cuda' else (_x.to(device), _y.to(device))
+        return _fixed_batch_cache['b']
+    return _get_batch(split)
+
+def _get_batch(split):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
@@ -211,6 +227,7 @@ model_args = dict(
     act_ckpt=act_ckpt,
     gdsm_logit_grad_scale=gdsm_logit_grad_scale,
     gdsm_iso_weight=gdsm_iso_weight,
+    hc_reduce_mean=hc_reduce_mean,
 ) # start with model_args from command line
 if master_process:
     print ("="*100)
@@ -365,6 +382,22 @@ while True:
         param_group['lr'] = lr * param_group.get('lr_mult', 1.0)
 
     # evaluate the loss on train/val sets and write checkpoints
+    if update_ratio_interval > 0 and iter_num > 0 and iter_num % update_ratio_interval == 0 and master_process:
+        # Adam's next update relative to the weights, per transformer block (Karpathy's update:data ratio, ~1e-3 healthy)
+        import re as _re
+        _acc = {}
+        for _n, _p in getattr(raw_model, "_orig_mod", raw_model).named_parameters():
+            _st = optimizer.state.get(_p)
+            if not _st or 'exp_avg' not in _st: continue
+            _g = next(g for g in optimizer.param_groups if any(q is _p for q in g['params']))
+            _t = float(_st['step']); _b1, _b2 = _g['betas']
+            _u = _g['lr'] * (_st['exp_avg'] / (1 - _b1 ** _t)) / ((_st['exp_avg_sq'] / (1 - _b2 ** _t)).sqrt() + _g['eps'])
+            _mm = _re.match(r"transformer\.h\.(\d+)\.", _n); _k = f"block{int(_mm.group(1)):02d}" if _mm else ("embed" if "wte" in _n or "wpe" in _n else "other")
+            _a = _acc.setdefault(_k, [0.0, 0.0]); _a[0] += _u.float().pow(2).sum().item(); _a[1] += _p.float().pow(2).sum().item()
+        _ur = {f"update_ratio/{k}": math.log10(max(a[0], 1e-30) ** 0.5 / max(a[1], 1e-30) ** 0.5) for k, a in _acc.items()}
+        print(f"[update/weight {iter_num}] log10 per block min {min(_ur.values()):.2f} max {max(_ur.values()):.2f}")
+        if wandb_log:
+            wandb.log(_ur, step=iter_num)
     if collapse_interval > 0 and iter_num % collapse_interval == 0 and master_process:
         from hyper_conn.collapse_probe import measure as collapse_measure
         cx, cy = get_batch('val')

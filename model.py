@@ -150,6 +150,7 @@ class GPTConfig:
     hyper_conn_n: int = 1
     hyper_conn_type: str = "none"
     gdsm_logit_grad_scale: float = 1.0   # GDSM only: gradient damping into the residual logits
+    hc_reduce_mean: bool = False         # average the streams at the output instead of summing them (the sum makes the logits n× too large at init)
     gdsm_iso_weight: float = 0.0         # GDSM only: isometry prior weight on the deviation's minor singular values
     act_ckpt: bool = False   # recompute each hyper-connection fold in backward (memory for time; the L model does not fit MB=16 on 32 GB otherwise)
 
@@ -237,6 +238,8 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         if self.reduce_stream is not None:
             x = self.reduce_stream(x)
+            if self.config.hc_reduce_mean and self.config.hyper_conn_type != 'none':
+                x = x / self.config.hyper_conn_n
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
