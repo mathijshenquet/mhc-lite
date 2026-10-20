@@ -71,7 +71,7 @@ def main():
     import math
     fw = [r[3] / r[4] for r in agg]; gr = [r[6] for r in agg]
     ok = [(x, y) for x, y in zip(fw, gr) if not math.isnan(y) and y > 0]
-    if len(ok) > 3:
+    if len(ok) > 3 and len(set(round(x, 6) for x, _ in ok)) > 1:
         xs_, ys_ = zip(*ok); mx, my = st.mean(xs_), st.mean([math.log(y) for y in ys_])
         cov = sum((x - mx) * (math.log(y) - my) for x, y in ok); vx = sum((x - mx) ** 2 for x in xs_); vy = sum((math.log(y) - my) ** 2 for y in ys_)
         print(f"  corr(bwd/bwd|M| sign-cancellation, log g_res) over folds: {cov / math.sqrt(vx * vy):+.2f}  (negative = more cancellation ↔ bigger gradient)")
