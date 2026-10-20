@@ -22,9 +22,11 @@ def main():
     ap.add_argument("--iters", type=int, default=20)
     ap.add_argument("--batch_size", type=int, default=2)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--block", type=int, default=0, help="sequence length for the HVP batch (0 = the model block size)")
     args = ap.parse_args()
     dev = args.device
-    model, ckpt = load(args.out_dir, dev, args.ckpt)
+    model, ckpt = load(args.out_dir, "cpu", args.ckpt)   # optimizer state stays on the CPU; only P^-1/2 goes to the GPU
+    model = model.to(dev)
     model.train(); cfg = ckpt["config"]; opt = ckpt["optimizer"]
     named = list(model.named_parameters())
     order = [(n, p) for n, p in named if p.dim() >= 2] + [(n, p) for n, p in named if p.dim() < 2]
@@ -36,7 +38,8 @@ def main():
         st = opt["state"][i]; t = float(st["step"])
         dinv.append((st["exp_avg_sq"].float().to(dev) / (1 - b2 ** t)).sqrt().add(eps).rsqrt())   # P^-1/2
     scalar_mask = [n.endswith("_scale") and p.dim() <= 1 for n, p in order]
-    x, y = next(iter(val_batches(cfg["dataset"], cfg["block_size"], args.batch_size, 1, dev, seed=6)))
+    del ckpt["optimizer"], ckpt["model"]
+    x, y = next(iter(val_batches(cfg["dataset"], args.block or cfg["block_size"], args.batch_size, 1, dev, seed=6)))
     with sdpa_kernel(SDPBackend.MATH), torch.autocast(dev, dtype=torch.bfloat16, enabled=dev == "cuda"):
         _, loss = model(x, y)
     grads = torch.autograd.grad(loss, params, create_graph=True)
