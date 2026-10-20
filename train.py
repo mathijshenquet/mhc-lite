@@ -261,7 +261,20 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 # optimizer
 optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type, scalar_lr_mult=scalar_lr_mult)
 if init_from == 'resume' and resume_optimizer:
-    optimizer.load_state_dict(checkpoint['optimizer'])
+    try:
+        optimizer.load_state_dict(checkpoint['optimizer'])
+    except ValueError:
+        # the param groups changed (e.g. scalar_lr_mult splits a group): carry Adam's per-parameter moments over by
+        # parameter position in the original (decay, no-decay) layout, so a resumed intervention test keeps its state
+        print("optimizer layout changed: re-partitioning the saved moments by parameter identity")
+        saved = checkpoint['optimizer']
+        old_params = [p for p in raw_model.parameters() if p.dim() >= 2] + [p for p in raw_model.parameters() if p.dim() < 2]
+        flat_ids = [i for g in saved['param_groups'] for i in g['params']]
+        assert len(flat_ids) == len(old_params), (len(flat_ids), len(old_params))
+        by_param = {old_params[k]: saved['state'][i] for k, i in enumerate(flat_ids) if i in saved['state']}
+        for p, st in by_param.items():
+            optimizer.state[p] = {k: (v.to(p.device) if torch.is_tensor(v) else v) for k, v in st.items()}
+        print(f"restored moments for {len(by_param)} parameter tensors")
 checkpoint = None # free up memory
 
 # compile the model
