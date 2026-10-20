@@ -302,6 +302,7 @@ class GDSMHyperConnections(Module):
         dim,
         logit_grad_scale = 1.0,
         iso_weight = 0.0,
+        static_res = False,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -379,6 +380,7 @@ class GDSMHyperConnections(Module):
         self.gate_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.logit_grad_scale = logit_grad_scale
         self.iso_weight = iso_weight
+        self.static_res = static_res
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -467,6 +469,12 @@ class GDSMHyperConnections(Module):
         alpha_scale      = cat((pre_branch_scale, residual_scale))
 
         dynamic_alpha = wc_weight * alpha_scale
+        if self.static_res:
+            # bisection vs mHC-lite: residual mixing from the static logits only (no per-token dynamics); the pre-branch
+            # read keeps its dynamic part
+            keep = torch.ones(dynamic_alpha.shape[-1], dtype = dynamic_alpha.dtype, device = dynamic_alpha.device)
+            keep[self.num_input_views:] = 0
+            dynamic_alpha = dynamic_alpha * keep
 
         static_alpha = rearrange(self.static_alpha, '(f s) t -> f s t', s = streams)
 

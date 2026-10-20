@@ -150,6 +150,7 @@ class GPTConfig:
     hyper_conn_n: int = 1
     hyper_conn_type: str = "none"
     gdsm_logit_grad_scale: float = 1.0   # GDSM only: gradient damping into the residual logits
+    gdsm_static_res: bool = False        # GDSM only: residual mixing from static logits only (bisection vs mHC-lite)
     hc_reduce_mean: bool = False         # average the streams at the output instead of summing them (the sum makes the logits n× too large at init)
     gdsm_iso_weight: float = 0.0         # GDSM only: isometry prior weight on the deviation's minor singular values
     act_ckpt: bool = False   # recompute each hyper-connection fold in backward (memory for time; the L model does not fit MB=16 on 32 GB otherwise)
@@ -165,7 +166,7 @@ class GPT(nn.Module):
         init_hc, expand_stream, reduce_stream = hyper_conn_init_func(
             config.hyper_conn_type , 
             config.hyper_conn_n , 
-            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight} if config.hyper_conn_type == "gdsm" else {}),
+            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight, "static_res": config.gdsm_static_res} if config.hyper_conn_type == "gdsm" else {}),
         )
         self.expand_stream = expand_stream
         self.reduce_stream = reduce_stream
