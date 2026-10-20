@@ -423,8 +423,12 @@ class GDSMHyperConnections(Module):
         # normed = F.normalize(normed, dim = -1)
         normed = self.norm(normed)
 
-        # alpha for weighted sum of residuals going into branch
-        wc_weight = normed @ self.dynamic_alpha_fn # ... f (s v+s)
+        # one GEMM for all dynamic logits (alpha, gate, beta) instead of three over the same (s·d)-wide input
+        fused = normed @ torch.cat([self.dynamic_alpha_fn, self.dynamic_gate_fn] + ([self.dynamic_beta_fn] if self.add_branch_out_to_residual else []), dim = -1)
+        n_alpha = self.dynamic_alpha_fn.shape[-1]; n_gate = self.dynamic_gate_fn.shape[-1]
+        wc_weight = fused[..., :n_alpha] # ... f (s v+s)
+        gate_logits = fused[..., n_alpha:n_alpha + n_gate]
+        dc_weight_fused = fused[..., n_alpha + n_gate:]
         wc_weight = rearrange(wc_weight, '... (s t) -> ... s t', s = streams)
 
         pre_branch_scale = repeat(self.pre_branch_scale, '1 -> v', v = self.num_input_views * self.num_fracs)
@@ -450,7 +454,7 @@ class GDSMHyperConnections(Module):
 
         alpha_residual = rearrange(alpha_residual, '... f s g t -> ... f g s t')
         # normed is (..., f, s·d); one gate logit per frac from its own slice → (..., f)
-        gate = (normed @ self.dynamic_gate_fn).diagonal(dim1 = -2, dim2 = -1) * self.gate_scale + self.static_gate
+        gate = gate_logits.diagonal(dim1 = -2, dim2 = -1) * self.gate_scale + self.static_gate
         gate = gate[..., :, None]                                                     # ... f g(=1 broadcast)
         if getattr(self, 'record_mixers', False):
             with torch.no_grad():   # raw scale of the centred logits before normalisation: the 1/σ in the Jacobian
@@ -467,7 +471,7 @@ class GDSMHyperConnections(Module):
 
         beta = None
         if self.add_branch_out_to_residual:
-            dc_weight = normed @ self.dynamic_beta_fn # ... (s f)
+            dc_weight = dc_weight_fused # ... (s f)
             dc_weight = rearrange(dc_weight, '... (s f) -> ... s f', s = streams)
 
             dynamic_beta = dc_weight * self.h_post_scale
