@@ -460,6 +460,10 @@ class GDSMHyperConnections(Module):
             with torch.no_grad():   # raw scale of the centred logits before normalisation: the 1/σ in the Jacobian
                 self.last_raw_sigma = spectral_norm_exact(double_center(alpha_residual.float()))[..., 0, 0]
                 self.last_raw_gate = gate.detach().float()[..., 0, 0]
+                # full singular spectrum of A' per token: the gap σ₁ − σ₂ decides whether the chosen direction is stable
+                self.last_raw_svals = torch.linalg.svdvals(double_center(alpha_residual.float())[..., 0, 0, :, :])
+            if alpha_residual.requires_grad:
+                alpha_residual.retain_grad(); self.last_logits = alpha_residual   # per-token gradient w.r.t. the residual logits
         alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]))
         alpha_residual = rearrange(alpha_residual, '... f g s t -> ... f s g t')
         if getattr(self, 'record_mixers', False):
