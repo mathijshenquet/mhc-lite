@@ -51,7 +51,7 @@ def main():
         upd = lr * mh / den + (lr * wd * w if p.dim() >= 2 else 0.0)
         a = acc[group(n)]
         a[0] += upd.pow(2).sum().item(); a[1] += w.pow(2).sum().item(); a[2] += (mh.abs() / den).sum().item(); a[3] += w.numel(); a[4] += vh.sum().item()
-    print(f"{cfg['hyper_conn_type']} iter {ckpt['iter_num']} lr {lr:.2e}:  group | upd/w | snr |m̂|/√v̂ | RMS √v̂ | params")
+    print(f"{ckpt['model_args']['hyper_conn_type']} iter {ckpt['iter_num']} lr {lr:.2e}:  group | upd/w | snr |m̂|/√v̂ | RMS √v̂ | params")
     for k in sorted(acc, key=lambda k: -acc[k][0] ** 0.5 / max(acc[k][1], 1e-30) ** 0.5):
         u, w2, snr, cnt, vs = acc[k]
         print(f"  {k:22s} {u ** 0.5 / max(w2, 1e-30) ** 0.5:.2e}  {snr / cnt:.3f}  {(vs / cnt) ** 0.5:.2e}  {cnt}")

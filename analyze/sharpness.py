@@ -21,8 +21,9 @@ def main():
     ap.add_argument("--ckpt", default="ckpt.pt")
     ap.add_argument("--iters", type=int, default=20)
     ap.add_argument("--batch_size", type=int, default=2)
+    ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
-    dev = "cuda"
+    dev = args.device
     model, ckpt = load(args.out_dir, dev, args.ckpt)
     model.train(); cfg = ckpt["config"]; opt = ckpt["optimizer"]
     named = list(model.named_parameters())
@@ -36,7 +37,7 @@ def main():
         dinv.append((st["exp_avg_sq"].float().to(dev) / (1 - b2 ** t)).sqrt().add(eps).rsqrt())   # P^-1/2
     scalar_mask = [n.endswith("_scale") and p.dim() <= 1 for n, p in order]
     x, y = next(iter(val_batches(cfg["dataset"], cfg["block_size"], args.batch_size, 1, dev, seed=6)))
-    with sdpa_kernel(SDPBackend.MATH), torch.autocast("cuda", dtype=torch.bfloat16):
+    with sdpa_kernel(SDPBackend.MATH), torch.autocast(dev, dtype=torch.bfloat16, enabled=dev == "cuda"):
         _, loss = model(x, y)
     grads = torch.autograd.grad(loss, params, create_graph=True)
 
@@ -61,7 +62,7 @@ def main():
 
     lr = lr_at(ckpt["iter_num"], cfg)
     full = power(True); scal = power(True, scalar_mask); raw = power(False)
-    print(f"{cfg['hyper_conn_type']} iter {ckpt['iter_num']} lr {lr:.2e}: λ(P⁻¹H) full {full:.3e} | gain scalars only {scal:.3e} | threshold 38/lr {38 / lr:.3e} | raw λ(H) {raw:.3e}")
+    print(f"{ckpt['model_args']['hyper_conn_type']} iter {ckpt['iter_num']} lr {lr:.2e}: λ(P⁻¹H) full {full:.3e} | gain scalars only {scal:.3e} | threshold 38/lr {38 / lr:.3e} | raw λ(H) {raw:.3e}")
 
 
 if __name__ == "__main__":
