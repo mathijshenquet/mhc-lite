@@ -86,6 +86,8 @@ beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 resume_optimizer = True # on resume, also restore the optimizer state (False: fresh moments; needed when the param groups changed)
+collapse_interval = 0 # >0: log stream-collapse metrics (pairwise stream cosine, effective #streams) every N iters
+ckpt_interval = 0 # >0: also save ckpt-<iter>.pt every N iters (no eval needed)
 sharpness_interval = 0 # >0: measure λ_max(P^-1 H) every N iters on the uncompiled model and log it next to 38/lr
 gdsm_fix_gate = False # GDSM surgery: dynamic gate projection := 0, static gate := 1, gate params frozen (gate == 1 exactly: the sphere map)
 freeze_scalars = False # freeze the hyper-connection gain scalars (ablation: is the instability carried by them?)
@@ -303,6 +305,9 @@ if init_from == 'resume' and resume_optimizer:
 checkpoint = None # free up memory
 
 # compile the model
+for _n, _m in model.named_modules():
+    if _n.endswith(("hc_attn", "hc_mlp")):
+        _m.record_cancel = False   # defined before compile so toggling it on the eager module never forces a recompile
 if compile:
     print("compiling the model... (takes a ~minute)")
     unoptimized_model = model
@@ -360,6 +365,17 @@ while True:
         param_group['lr'] = lr * param_group.get('lr_mult', 1.0)
 
     # evaluate the loss on train/val sets and write checkpoints
+    if collapse_interval > 0 and iter_num % collapse_interval == 0 and master_process:
+        from hyper_conn.collapse_probe import measure as collapse_measure
+        cx, cy = get_batch('val')
+        cres = collapse_measure(getattr(raw_model, "_orig_mod", raw_model), cx[:2], cy[:2], device_type)
+        if cres:
+            print(f"[collapse {iter_num}] stream cos mean {cres['collapse/cos_mean']:.3f} max {cres['collapse/cos_max']:.3f} | eff streams mean {cres['collapse/eff_streams_mean']:.2f} min {cres['collapse/eff_streams_min']:.2f}")
+            if wandb_log:
+                wandb.log(cres, step=iter_num)
+    if ckpt_interval > 0 and iter_num > 0 and iter_num % ckpt_interval == 0 and master_process:
+        torch.save({'model': raw_model.state_dict(), 'optimizer': optimizer.state_dict(), 'model_args': model_args,
+                    'iter_num': iter_num, 'best_val_loss': best_val_loss, 'config': config}, os.path.join(out_dir, f'ckpt-{iter_num}.pt'))
     if sharpness_interval > 0 and iter_num % sharpness_interval == 0 and master_process and iter_num > 0:
         if 'sharp_probe' not in globals():
             from hyper_conn.sharpness_probe import SharpnessProbe
