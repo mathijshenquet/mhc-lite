@@ -86,6 +86,7 @@ beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 resume_optimizer = True # on resume, also restore the optimizer state (False: fresh moments; needed when the param groups changed)
+gdsm_fix_gate = False # GDSM surgery: dynamic gate projection := 0, static gate := 1, gate params frozen (gate == 1 exactly: the sphere map)
 freeze_scalars = False # freeze the hyper-connection gain scalars (ablation: is the instability carried by them?)
 scalar_lr_mult = 1.0 # learning-rate multiplier for the hyper-connection gain scalars (own optimizer group)
 clip_scalars_separately = False # clip the hyper-connection gain scalars as their own group: a few hundred scalars with a large gradient must not throttle the rest of the model (GDSM-L, 2026-10-20)
@@ -264,6 +265,17 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
+if gdsm_fix_gate:
+    n_fixed = 0
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if n.endswith("dynamic_gate_fn"):
+                p.zero_(); p.requires_grad_(False); n_fixed += 1
+            elif n.endswith("static_gate"):
+                p.fill_(1.0); p.requires_grad_(False)
+            elif n.endswith("gate_scale"):
+                p.requires_grad_(False)
+    print(f"gdsm_fix_gate: gate fixed at 1 in {n_fixed} folds")
 if freeze_scalars:
     frozen = [n for n, p in model.named_parameters() if n.endswith("_scale") and p.dim() <= 1]
     for n, p in model.named_parameters():
