@@ -388,6 +388,10 @@ class GDSMHyperConnections(Module):
         # normed is (..., f, s·d); one gate logit per frac from its own slice → (..., f)
         gate = (normed @ self.dynamic_gate_fn).diagonal(dim1 = -2, dim2 = -1) * self.gate_scale + self.static_gate
         gate = gate[..., :, None]                                                     # ... f g(=1 broadcast)
+        if getattr(self, 'record_mixers', False):
+            with torch.no_grad():   # raw scale of the centred logits before normalisation: the 1/σ in the Jacobian
+                self.last_raw_sigma = spectral_norm_exact(double_center(alpha_residual.float()))[..., 0, 0]
+                self.last_raw_gate = gate.detach().float()[..., 0, 0]
         alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]))
         alpha_residual = rearrange(alpha_residual, '... f g s t -> ... f s g t')
         if getattr(self, 'record_mixers', False):
