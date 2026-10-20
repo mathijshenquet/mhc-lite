@@ -149,6 +149,7 @@ class GPTConfig:
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     hyper_conn_n: int = 1
     hyper_conn_type: str = "none"
+    gdsm_logit_grad_scale: float = 1.0   # GDSM only: gradient damping into the residual logits
     act_ckpt: bool = False   # recompute each hyper-connection fold in backward (memory for time; the L model does not fit MB=16 on 32 GB otherwise)
 
 class GPT(nn.Module):
@@ -162,6 +163,7 @@ class GPT(nn.Module):
         init_hc, expand_stream, reduce_stream = hyper_conn_init_func(
             config.hyper_conn_type , 
             config.hyper_conn_n , 
+            **({"logit_grad_scale": config.gdsm_logit_grad_scale} if config.hyper_conn_type == "gdsm" else {}),
         )
         self.expand_stream = expand_stream
         self.reduce_stream = reduce_stream

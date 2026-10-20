@@ -41,6 +41,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # ----- hyper conn start -----
 hyper_conn_type = "none" # none, hc, mhc, mhc_lite
+gdsm_logit_grad_scale = 1.0 # GDSM: damp the gradient into the residual logits (forward unchanged)
 act_ckpt = False # activation checkpointing of the hyper-connection folds
 hyper_conn_n = 1 # num_streams
 
@@ -202,6 +203,7 @@ model_args = dict(
     hyper_conn_n=hyper_conn_n,
     hyper_conn_type=hyper_conn_type,
     act_ckpt=act_ckpt,
+    gdsm_logit_grad_scale=gdsm_logit_grad_scale,
 ) # start with model_args from command line
 if master_process:
     print ("="*100)

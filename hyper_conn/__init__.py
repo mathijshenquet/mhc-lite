@@ -35,7 +35,7 @@ from .mhc_analysis import (
 
 flag = False
 
-def hyper_conn_init_func(hyper_conn_type: str, hyper_conn_n: int):
+def hyper_conn_init_func(hyper_conn_type: str, hyper_conn_n: int, **gdsm_kwargs):
     global flag
     if not flag:
         print(f"HYPER_CONN: USING {hyper_conn_type} with {hyper_conn_n} streams")
@@ -50,7 +50,7 @@ def hyper_conn_init_func(hyper_conn_type: str, hyper_conn_n: int):
     elif hyper_conn_type == "mhc_lite":
         return mhclite_get_init_and_expand_reduce_stream_functions(hyper_conn_n)
     elif hyper_conn_type == "gdsm":
-        return gdsm_get_init_and_expand_reduce_stream_functions(hyper_conn_n)
+        return gdsm_get_init_and_expand_reduce_stream_functions(hyper_conn_n, **gdsm_kwargs)
     elif hyper_conn_type == "analysis":
         return mhc_analysis_get_init_and_expand_reduce_stream_functions(hyper_conn_n)
     else:

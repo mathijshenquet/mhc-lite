@@ -274,6 +274,7 @@ class GDSMHyperConnections(Module):
         num_residual_streams,
         *,
         dim,
+        logit_grad_scale = 1.0,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -349,6 +350,7 @@ class GDSMHyperConnections(Module):
         self.dynamic_gate_fn = nn.Parameter(torch.zeros(dim * num_residual_streams, num_fracs))
         self.static_gate = nn.Parameter(torch.full((num_fracs,), _GATE_INIT))
         self.gate_scale = nn.Parameter(torch.ones(1) * 1e-2)
+        self.logit_grad_scale = logit_grad_scale
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
 
@@ -453,6 +455,12 @@ class GDSMHyperConnections(Module):
             self.last_pre = alpha_pre.detach()[..., :, 0, 0]   # (..., s) read weight per stream (view 0)
 
         alpha_residual = rearrange(alpha_residual, '... f s g t -> ... f g s t')
+        if self.logit_grad_scale != 1.0:
+            # damp the gradient reaching the residual logits (forward unchanged): the exact normalisation has a
+            # unit-gain Jacobian everywhere, unlike the saturated softmax / contractive Sinkhorn of the Birkhoff
+            # variants (measured 0.7-0.9 vs 0.00-0.03), which at depth floods the gain scalars (2026-10-20)
+            k = self.logit_grad_scale
+            alpha_residual = alpha_residual * k + (alpha_residual * (1.0 - k)).detach()
         # normed is (..., f, s·d); one gate logit per frac from its own slice → (..., f)
         gate = gate_logits.diagonal(dim1 = -2, dim2 = -1) * self.gate_scale + self.static_gate
         gate = gate[..., :, None]                                                     # ... f g(=1 broadcast)
