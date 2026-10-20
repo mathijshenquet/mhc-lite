@@ -86,6 +86,7 @@ beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 resume_optimizer = True # on resume, also restore the optimizer state (False: fresh moments; needed when the param groups changed)
+sharpness_interval = 0 # >0: measure λ_max(P^-1 H) every N iters on the uncompiled model and log it next to 38/lr
 gdsm_fix_gate = False # GDSM surgery: dynamic gate projection := 0, static gate := 1, gate params frozen (gate == 1 exactly: the sphere map)
 freeze_scalars = False # freeze the hyper-connection gain scalars (ablation: is the instability carried by them?)
 scalar_lr_mult = 1.0 # learning-rate multiplier for the hyper-connection gain scalars (own optimizer group)
@@ -359,6 +360,17 @@ while True:
         param_group['lr'] = lr * param_group.get('lr_mult', 1.0)
 
     # evaluate the loss on train/val sets and write checkpoints
+    if sharpness_interval > 0 and iter_num % sharpness_interval == 0 and master_process and iter_num > 0:
+        if 'sharp_probe' not in globals():
+            from hyper_conn.sharpness_probe import SharpnessProbe
+            sharp_probe = SharpnessProbe(getattr(raw_model, "_orig_mod", raw_model), optimizer)   # eager module: compile has no double backward
+        sx, sy = get_batch('train')
+        sres = sharp_probe.measure(sx, sy, device_type)
+        if sres:
+            sres["sharpness/threshold_38_over_lr"] = 38.0 / lr
+            print(f"[sharpness {iter_num}] λ(P^-1 H) {sres['sharpness/precond']:.3e} scalars {sres['sharpness/precond_scalars']:.3e} threshold {38.0 / lr:.3e}")
+            if wandb_log:
+                wandb.log(sres, step=iter_num)
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         avg_train_loss = [np.mean(train_losses), np.std(train_losses)] if len(train_losses) > 0 else [0, 0]
