@@ -304,6 +304,8 @@ class GDSMHyperConnections(Module):
         iso_weight = 0.0,
         static_res = False,
         read_softcap = 0.0,
+        centred_mix = False,
+        fp32_logits = False,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -383,6 +385,8 @@ class GDSMHyperConnections(Module):
         self.iso_weight = iso_weight
         self.static_res = static_res
         self.read_softcap = read_softcap
+        self.centred_mix = centred_mix
+        self.fp32_logits = fp32_logits
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -459,7 +463,14 @@ class GDSMHyperConnections(Module):
         normed = self.norm(normed)
 
         # one GEMM for all dynamic logits (alpha, gate, beta) instead of three over the same (s·d)-wide input
-        fused = normed @ torch.cat([self.dynamic_alpha_fn, self.dynamic_gate_fn] + ([self.dynamic_beta_fn] if self.add_branch_out_to_residual else []), dim = -1)
+        projection = torch.cat([self.dynamic_alpha_fn, self.dynamic_gate_fn] + ([self.dynamic_beta_fn] if self.add_branch_out_to_residual else []), dim = -1)
+        if self.fp32_logits:
+            # bf16 rounding of the logit GEMM becomes per-token noise on B (GDSM's realisation passes logit changes
+            # through at unit gain, unlike lite's saturated softmax); this small projection is cheap in fp32
+            with torch.autocast(device_type = normed.device.type, enabled = False):
+                fused = normed.float() @ projection.float()
+        else:
+            fused = normed @ projection
         n_alpha = self.dynamic_alpha_fn.shape[-1]; n_gate = self.dynamic_gate_fn.shape[-1]
         wc_weight = fused[..., :n_alpha] # ... f (s v+s)
         gate_logits = fused[..., n_alpha:n_alpha + n_gate]
@@ -545,10 +556,22 @@ class GDSMHyperConnections(Module):
             if getattr(self, 'record_mixers', False):
                 self.last_post = beta.detach()[..., :, 0]   # (..., s) write weight per stream
 
-        mix_h = einsum(alpha, residuals, '... f1 s f2 t, ... f1 s d -> ... f2 t d')
+        if self.centred_mix:
+            # exact rewrite of alpha·x as alpha·(x − x̄) + (Σ_s alpha) x̄ with x̄ the stream mean, computed in fp32: the
+            # low-precision einsum then only sees the stream differences, so its rounding error scales with them
+            # instead of with the shared component (2026-10-21)
+            with torch.autocast(device_type = residuals.device.type, enabled = False):
+                shared = residuals.float().mean(dim = -2, keepdim = True)
+                column_sums = alpha.float().sum(dim = -3)                                    # ... f1 f2 t
+            centred = einsum(alpha, residuals - shared.to(residuals.dtype), '... f1 s f2 t, ... f1 s d -> ... f2 t d')
+            mix_h = centred.float() + einsum(column_sums, shared[..., 0, :], '... f1 f2 t, ... f1 d -> ... f2 t d')
+            mix_h = mix_h.to(centred.dtype)
+        else:
+            mix_h = einsum(alpha, residuals, '... f1 s f2 t, ... f1 s d -> ... f2 t d')
         if getattr(self, 'record_cancel', False):
             # inputs and outputs of the stream mixing, for the cancellation analysis (analyze/cancellation.py)
             self.last_resid_in = residuals.detach()
+            self.last_alpha = alpha.detach()
             if mix_h.requires_grad:
                 mix_h.retain_grad()
             self.last_mix_out = mix_h

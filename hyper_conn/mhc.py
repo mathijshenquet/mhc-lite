@@ -399,6 +399,7 @@ class ManifoldConstrainedHyperConnections(Module):
         if getattr(self, 'record_cancel', False):
             # inputs and outputs of the stream mixing, for the cancellation analysis (analyze/cancellation.py)
             self.last_resid_in = residuals.detach()
+            self.last_alpha = alpha.detach()
             if mix_h.requires_grad:
                 mix_h.retain_grad()
             self.last_mix_out = mix_h
