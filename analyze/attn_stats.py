@@ -23,7 +23,7 @@ def layer_stats(out_dir, ckpt, batches, block):
     rows = {}
     hooks = []
     for index, block_module in enumerate(model.transformer.h):
-        attention = block_module.attn
+        attention = block_module.branch_attn[1]
 
         def attention_hook(module, inputs, output, index=index):
             x = inputs[0]
@@ -49,7 +49,7 @@ def layer_stats(out_dir, ckpt, batches, block):
             rows[index]["mlp_max"] = max(rows[index]["mlp_max"], pre.abs().max().item())
 
         hooks.append(attention.register_forward_hook(attention_hook))
-        hooks.append(block_module.mlp.register_forward_hook(mlp_hook))
+        hooks.append(block_module.branch_mlp[1].register_forward_hook(mlp_hook))
     with torch.no_grad():
         for x, y in val_batches(config["dataset"], block, 1, batches, "cpu", seed=3):
             model(x, y)
