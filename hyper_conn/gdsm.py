@@ -308,6 +308,7 @@ class GDSMHyperConnections(Module):
         fp32_logits = False,
         fp32_mix = False,
         fp32_stream = False,
+        detach_mix_input = False,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -391,6 +392,7 @@ class GDSMHyperConnections(Module):
         self.fp32_logits = fp32_logits
         self.fp32_mix = fp32_mix
         self.fp32_stream = fp32_stream
+        self.detach_mix_input = detach_mix_input
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -480,9 +482,11 @@ class GDSMHyperConnections(Module):
         gate_logits = fused[..., n_alpha:n_alpha + n_gate]
         dc_weight_fused = fused[..., n_alpha + n_gate:]
         wc_weight = rearrange(wc_weight, '... (s t) -> ... s t', s = streams)
-        if getattr(self, 'cut_mixer_route', False):
-            # analysis only: the residual-mixing logits keep their value but no gradient flows from them back into the
-            # stream (and so into earlier branches); the read/write logits are untouched
+        if self.detach_mix_input or getattr(self, 'cut_mixer_route', False):
+            # the residual-mixing logits keep their value and their projection still learns, but no gradient flows from
+            # them back into the stream (and so into earlier branches); the read/write logits are untouched.  In bf16
+            # GDSM-L this stream -> later-mixer route grows from ~1% to ~1/3 of the early MLP gradients and drives the
+            # blow-up (2026-10-21); lite's saturated softmax and static mixing do not have it
             keep_read = torch.zeros(wc_weight.shape[-1], dtype = torch.bool, device = wc_weight.device)
             keep_read[:self.num_input_views] = True
             wc_weight = torch.where(keep_read, wc_weight, (normed.detach() @ projection)[..., :n_alpha].unflatten(-1, (streams, -1)))

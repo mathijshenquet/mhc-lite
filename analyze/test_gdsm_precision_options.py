@@ -13,7 +13,7 @@ def build(t="gdsm", **kw):
 with torch.no_grad():
     base = build()(x, x)[1].item(); again = build()(x, x)[1].item()
     print("baseline vs baseline:", abs(base - again))
-    for kw in [dict(gdsm_centred_mix=True), dict(gdsm_fp32_logits=True), dict(gdsm_fp32_mix=True), dict(gdsm_fp32_stream=True)]:
+    for kw in [dict(gdsm_centred_mix=True), dict(gdsm_fp32_logits=True), dict(gdsm_fp32_mix=True), dict(gdsm_fp32_stream=True), dict(gdsm_detach_mix_input=True)]:
         print(kw, "fp32 loss diff vs baseline:", abs(build(**kw)(x, x)[1].item() - base))
     # bf16 autocast on CPU: centred mixing should not change the loss beyond bf16 noise
     with torch.autocast("cpu", dtype=torch.bfloat16):

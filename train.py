@@ -91,6 +91,7 @@ gdsm_centred_mix = False # GDSM: centred stream mixing (bf16 rounding sees only 
 gdsm_fp32_logits = False # GDSM: dynamic logit GEMM in fp32
 gdsm_fp32_mix = False # GDSM: stream-mixing einsum in fp32, output in the autocast dtype
 gdsm_fp32_stream = False # GDSM: the whole residual-stream path in fp32 (branches stay under autocast)
+gdsm_detach_mix_input = False # GDSM: cut the gradient route stream -> residual-mixing logits (forward unchanged)
 gdsm_static_res = False # GDSM bisection: residual mixing without per-token dynamics
 hc_reduce_mean = False # average the n streams at the output (fork default sums them: logits n× at init)
 fixed_batch = False # overfit test: every training micro-batch is the same seeded batch
@@ -241,6 +242,7 @@ model_args = dict(
     gdsm_fp32_logits=gdsm_fp32_logits,
     gdsm_fp32_mix=gdsm_fp32_mix,
     gdsm_fp32_stream=gdsm_fp32_stream,
+    gdsm_detach_mix_input=gdsm_detach_mix_input,
 ) # start with model_args from command line
 if master_process:
     print ("="*100)
