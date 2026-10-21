@@ -309,6 +309,7 @@ class GDSMHyperConnections(Module):
         fp32_mix = False,
         fp32_stream = False,
         detach_mix_input = False,
+        dyn_res_scale = 1.0,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -393,6 +394,7 @@ class GDSMHyperConnections(Module):
         self.fp32_mix = fp32_mix
         self.fp32_stream = fp32_stream
         self.detach_mix_input = detach_mix_input
+        self.dyn_res_scale = dyn_res_scale
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -496,11 +498,12 @@ class GDSMHyperConnections(Module):
         alpha_scale      = cat((pre_branch_scale, residual_scale))
 
         dynamic_alpha = wc_weight * alpha_scale
-        if self.static_res:
-            # bisection vs mHC-lite: residual mixing from the static logits only (no per-token dynamics); the pre-branch
-            # read keeps its dynamic part
+        if self.static_res or self.dyn_res_scale != 1.0:
+            # static_res: residual mixing from the static logits only (no per-token dynamics); dyn_res_scale in (0, 1)
+            # damps the per-token part instead (bf16 GDSM-L is stable static, unstable at full dynamics, 2026-10-21).
+            # The pre-branch read keeps its dynamic part.
             keep = torch.ones(dynamic_alpha.shape[-1], dtype = dynamic_alpha.dtype, device = dynamic_alpha.device)
-            keep[self.num_input_views:] = 0
+            keep[self.num_input_views:] = 0.0 if self.static_res else self.dyn_res_scale
             dynamic_alpha = dynamic_alpha * keep
 
         static_alpha = rearrange(self.static_alpha, '(f s) t -> f s t', s = streams)
