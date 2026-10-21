@@ -307,6 +307,7 @@ class GDSMHyperConnections(Module):
         centred_mix = False,
         fp32_logits = False,
         fp32_mix = False,
+        fp32_stream = False,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -389,6 +390,7 @@ class GDSMHyperConnections(Module):
         self.centred_mix = centred_mix
         self.fp32_logits = fp32_logits
         self.fp32_mix = fp32_mix
+        self.fp32_stream = fp32_stream
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -568,6 +570,11 @@ class GDSMHyperConnections(Module):
             centred = einsum(alpha, residuals - shared.to(residuals.dtype), '... f1 s f2 t, ... f1 s d -> ... f2 t d')
             mix_h = centred.float() + einsum(column_sums, shared[..., 0, :], '... f1 f2 t, ... f1 d -> ... f2 t d')
             mix_h = mix_h.to(centred.dtype)
+        elif self.fp32_stream:
+            # bisection arm: the whole residual-stream path in fp32 (mixing, write, residual add, storage between
+            # folds); only the branches (attention / MLP) keep running under autocast
+            with torch.autocast(device_type = residuals.device.type, enabled = False):
+                mix_h = einsum(alpha.float(), residuals.float(), '... f1 s f2 t, ... f1 s d -> ... f2 t d')
         elif self.fp32_mix:
             # bisection arm: the whole mixing einsum in fp32, output rounded back to the dtype the autocast path would
             # produce, so only the mixing arithmetic changes and the stream storage precision does not
@@ -622,7 +629,12 @@ class GDSMHyperConnections(Module):
         if self.channel_first:
             branch_output = rearrange(branch_output, 'b d ... -> b ... d')
 
-        output = einsum(branch_output, beta, 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
+        if self.fp32_stream:
+            with torch.autocast(device_type = branch_output.device.type, enabled = False):
+                output = einsum(branch_output.float(), beta.float(), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
+                residuals = residuals.float()
+        else:
+            output = einsum(branch_output, beta, 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
 
         output = rearrange(output, 'b ... s d -> (b s) ... d')
 
