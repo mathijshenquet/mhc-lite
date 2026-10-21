@@ -381,10 +381,51 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+# live control: whitelisted settings and actions through <out_dir>/control.json (see live_control.py)
+LIVE_SETTABLE = {"max_iters": int, "lr_decay_iters": int, "warmup_iters": int, "learning_rate": float, "min_lr": float,
+                 "decay_lr": bool, "grad_clip": float, "weight_decay": float, "scalar_lr_mult": float,
+                 "ckpt_interval": int, "eval_interval": int, "log_interval": int, "collapse_interval": int,
+                 "update_ratio_interval": int, "sharpness_interval": int, "always_save_checkpoint": bool}
+live_control = None
+if master_process and not ddp:
+    from live_control import LiveControl
+    live_control = LiveControl(out_dir, LIVE_SETTABLE)
+elif ddp:
+    print("live control disabled under DDP (settings would need a broadcast to every rank)")
+live_actions = {}
+
+def save_checkpoint(path):
+    torch.save({'model': raw_model.state_dict(), 'optimizer': optimizer.state_dict(), 'model_args': model_args,
+                'iter_num': iter_num, 'best_val_loss': best_val_loss, 'config': config}, path)
+    print(f"saved {path}")
+
 train_losses = []
 tpss = [] # token per second
 grad_norms = []
 while True:
+
+    if live_control is not None:
+        change = live_control.poll(globals(), iter_num)
+        if change:
+            for key, (_, new) in change["applied"].items():
+                config[key] = new
+                if key == "weight_decay":
+                    for param_group in optimizer.param_groups:
+                        if param_group.get("weight_decay", 0.0) > 0:
+                            param_group["weight_decay"] = new
+                if key == "scalar_lr_mult":
+                    for param_group in optimizer.param_groups:
+                        if "lr_mult" in param_group:
+                            param_group["lr_mult"] = new
+            if wandb_log and change["applied"]:
+                wandb.config.update({key: new for key, (_, new) in change["applied"].items()}, allow_val_change=True)
+            live_actions = change["actions"]
+        if live_actions.pop("save_now", False):
+            save_checkpoint(os.path.join(out_dir, f'ckpt-{iter_num}.pt'))
+        if live_actions.pop("stop", False):
+            save_checkpoint(os.path.join(out_dir, 'ckpt.pt'))
+            print(f"live stop at iter {iter_num}")
+            break
 
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
@@ -430,7 +471,7 @@ while True:
             print(f"[sharpness {iter_num}] λ(P^-1 H) {sres['sharpness/precond']:.3e} scalars {sres['sharpness/precond_scalars']:.3e} threshold {38.0 / lr:.3e}")
             if wandb_log:
                 wandb.log(sres, step=iter_num)
-    if iter_num % eval_interval == 0 and master_process:
+    if (iter_num % eval_interval == 0 or live_actions.pop("eval_now", False)) and master_process:
         losses = estimate_loss()
         avg_train_loss = [np.mean(train_losses), np.std(train_losses)] if len(train_losses) > 0 else [0, 0]
         avg_grad_norm = [np.mean(grad_norms), np.std(grad_norms)] if len(grad_norms) > 0 else [0, 0]
