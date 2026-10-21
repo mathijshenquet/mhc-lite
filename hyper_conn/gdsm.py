@@ -310,6 +310,7 @@ class GDSMHyperConnections(Module):
         fp32_stream = False,
         detach_mix_input = False,
         dyn_res_scale = 1.0,
+        tokvar_weight = 0.0,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -395,6 +396,8 @@ class GDSMHyperConnections(Module):
         self.fp32_stream = fp32_stream
         self.detach_mix_input = detach_mix_input
         self.dyn_res_scale = dyn_res_scale
+        self.tokvar_weight = tokvar_weight
+        self.tokvar_penalty = None
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -551,6 +554,11 @@ class GDSMHyperConnections(Module):
             if alpha_residual.requires_grad:
                 alpha_residual.retain_grad(); self.last_logits = alpha_residual   # per-token gradient w.r.t. the residual logits
         alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]))
+        if self.tokvar_weight > 0:
+            # variance of the realised mixer across tokens: GDSM's unsaturated map passes per-token logit changes to B
+            # at ~unit gain (lite/mHC: ~0), and in bf16 that per-token motion drives a blow-up (2026-10-21); penalising
+            # it is a smooth pull toward static mixing that keeps dynamics where they pay
+            self.tokvar_penalty = alpha_residual.float().flatten(0, -5).var(dim = 0).mean()
         alpha_residual = rearrange(alpha_residual, '... f g s t -> ... f s g t')
         if getattr(self, 'record_mixers', False):
             self.last_mixer = alpha_residual.detach()[..., 0, :, 0, :]   # (..., s, t) per token
