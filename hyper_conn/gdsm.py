@@ -311,6 +311,7 @@ class GDSMHyperConnections(Module):
         detach_mix_input = False,
         dyn_res_scale = 1.0,
         tokvar_weight = 0.0,
+        neg_weight = 0.0,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -398,6 +399,8 @@ class GDSMHyperConnections(Module):
         self.dyn_res_scale = dyn_res_scale
         self.tokvar_weight = tokvar_weight
         self.tokvar_penalty = None
+        self.neg_weight = neg_weight
+        self.neg_penalty = None
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -559,6 +562,10 @@ class GDSMHyperConnections(Module):
             # at ~unit gain (lite/mHC: ~0), and in bf16 that per-token motion drives a blow-up (2026-10-21); penalising
             # it is a smooth pull toward static mixing that keeps dynamics where they pay
             self.tokvar_penalty = alpha_residual.float().flatten(0, -5).var(dim = 0).mean()
+        if self.neg_weight > 0:
+            # pull the realised mixer's entries toward non-negative (toward the Birkhoff polytope that mHC lives on);
+            # tests whether the sign, rather than the per-token sensitivity, matters for the bf16 blow-up
+            self.neg_penalty = torch.relu(-alpha_residual.float()).pow(2).sum((-2, -1)).mean()
         alpha_residual = rearrange(alpha_residual, '... f g s t -> ... f s g t')
         if getattr(self, 'record_mixers', False):
             self.last_mixer = alpha_residual.detach()[..., 0, :, 0, :]   # (..., s, t) per token

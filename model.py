@@ -158,6 +158,7 @@ class GPTConfig:
     gdsm_detach_mix_input: bool = False  # GDSM only: no gradient from the residual-mixing logits back into the stream
     gdsm_dyn_res_scale: float = 1.0      # GDSM only: factor on the per-token part of the residual-mixing logits (0 = static)
     gdsm_tokvar_weight: float = 0.0      # GDSM only: training penalty on the realised mixer's variance across tokens
+    gdsm_neg_weight: float = 0.0         # GDSM only: training penalty on negative entries of the realised mixer
     gdsm_static_res: bool = False        # GDSM only: residual mixing from static logits only (bisection vs mHC-lite)
     hc_reduce_mean: bool = False         # average the streams at the output instead of summing them (the sum makes the logits n× too large at init)
     gdsm_iso_weight: float = 0.0         # GDSM only: isometry prior weight on the deviation's minor singular values
@@ -174,7 +175,7 @@ class GPT(nn.Module):
         init_hc, expand_stream, reduce_stream = hyper_conn_init_func(
             config.hyper_conn_type , 
             config.hyper_conn_n , 
-            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight, "static_res": config.gdsm_static_res, "read_softcap": config.gdsm_read_softcap, "centred_mix": config.gdsm_centred_mix, "fp32_logits": config.gdsm_fp32_logits, "fp32_mix": config.gdsm_fp32_mix, "fp32_stream": config.gdsm_fp32_stream, "detach_mix_input": config.gdsm_detach_mix_input, "dyn_res_scale": config.gdsm_dyn_res_scale, "tokvar_weight": config.gdsm_tokvar_weight} if config.hyper_conn_type == "gdsm" else {}),
+            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight, "static_res": config.gdsm_static_res, "read_softcap": config.gdsm_read_softcap, "centred_mix": config.gdsm_centred_mix, "fp32_logits": config.gdsm_fp32_logits, "fp32_mix": config.gdsm_fp32_mix, "fp32_stream": config.gdsm_fp32_stream, "detach_mix_input": config.gdsm_detach_mix_input, "dyn_res_scale": config.gdsm_dyn_res_scale, "tokvar_weight": config.gdsm_tokvar_weight, "neg_weight": config.gdsm_neg_weight} if config.hyper_conn_type == "gdsm" else {}),
         )
         self.expand_stream = expand_stream
         self.reduce_stream = reduce_stream
@@ -263,6 +264,10 @@ class GPT(nn.Module):
                 penalties = [m.tokvar_penalty for n, m in self.named_modules() if n.endswith(("hc_attn", "hc_mlp")) and getattr(m, "tokvar_penalty", None) is not None]
                 if penalties:
                     loss = loss + self.config.gdsm_tokvar_weight * torch.stack(penalties).mean()
+            if self.config.hyper_conn_type == "gdsm" and self.config.gdsm_neg_weight > 0 and self.training:
+                penalties = [m.neg_penalty for n, m in self.named_modules() if n.endswith(("hc_attn", "hc_mlp")) and getattr(m, "neg_penalty", None) is not None]
+                if penalties:
+                    loss = loss + self.config.gdsm_neg_weight * torch.stack(penalties).mean()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
