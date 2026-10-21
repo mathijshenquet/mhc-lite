@@ -480,6 +480,12 @@ class GDSMHyperConnections(Module):
         gate_logits = fused[..., n_alpha:n_alpha + n_gate]
         dc_weight_fused = fused[..., n_alpha + n_gate:]
         wc_weight = rearrange(wc_weight, '... (s t) -> ... s t', s = streams)
+        if getattr(self, 'cut_mixer_route', False):
+            # analysis only: the residual-mixing logits keep their value but no gradient flows from them back into the
+            # stream (and so into earlier branches); the read/write logits are untouched
+            keep_read = torch.zeros(wc_weight.shape[-1], dtype = torch.bool, device = wc_weight.device)
+            keep_read[:self.num_input_views] = True
+            wc_weight = torch.where(keep_read, wc_weight, (normed.detach() @ projection)[..., :n_alpha].unflatten(-1, (streams, -1)))
 
         pre_branch_scale = repeat(self.pre_branch_scale, '1 -> v', v = self.num_input_views * self.num_fracs)
         residual_scale   = repeat(self.residual_scale  , '1 -> s', s = self.num_fracs * streams)
