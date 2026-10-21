@@ -306,6 +306,7 @@ class GDSMHyperConnections(Module):
         read_softcap = 0.0,
         centred_mix = False,
         fp32_logits = False,
+        fp32_mix = False,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -387,6 +388,7 @@ class GDSMHyperConnections(Module):
         self.read_softcap = read_softcap
         self.centred_mix = centred_mix
         self.fp32_logits = fp32_logits
+        self.fp32_mix = fp32_mix
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -566,6 +568,13 @@ class GDSMHyperConnections(Module):
             centred = einsum(alpha, residuals - shared.to(residuals.dtype), '... f1 s f2 t, ... f1 s d -> ... f2 t d')
             mix_h = centred.float() + einsum(column_sums, shared[..., 0, :], '... f1 f2 t, ... f1 d -> ... f2 t d')
             mix_h = mix_h.to(centred.dtype)
+        elif self.fp32_mix:
+            # bisection arm: the whole mixing einsum in fp32, output rounded back to the dtype the autocast path would
+            # produce, so only the mixing arithmetic changes and the stream storage precision does not
+            device_type = residuals.device.type
+            out_dtype = torch.get_autocast_dtype(device_type) if torch.is_autocast_enabled(device_type) else residuals.dtype
+            with torch.autocast(device_type = device_type, enabled = False):
+                mix_h = einsum(alpha.float(), residuals.float(), '... f1 s f2 t, ... f1 s d -> ... f2 t d').to(out_dtype)
         else:
             mix_h = einsum(alpha, residuals, '... f1 s f2 t, ... f1 s d -> ... f2 t d')
         if getattr(self, 'record_cancel', False):

@@ -13,11 +13,11 @@ def build(t="gdsm", **kw):
 with torch.no_grad():
     base = build()(x, x)[1].item(); again = build()(x, x)[1].item()
     print("baseline vs baseline:", abs(base - again))
-    for kw in [dict(gdsm_centred_mix=True), dict(gdsm_fp32_logits=True)]:
+    for kw in [dict(gdsm_centred_mix=True), dict(gdsm_fp32_logits=True), dict(gdsm_fp32_mix=True)]:
         print(kw, "fp32 loss diff vs baseline:", abs(build(**kw)(x, x)[1].item() - base))
     # bf16 autocast on CPU: centred mixing should not change the loss beyond bf16 noise
     with torch.autocast("cpu", dtype=torch.bfloat16):
-        print("bf16 baseline", round(build()(x, x)[1].item(), 4), "bf16 centred", round(build(gdsm_centred_mix=True)(x, x)[1].item(), 4), "fp32", round(base, 4))
+        print("bf16 baseline", round(build()(x, x)[1].item(), 4), "bf16 centred", round(build(gdsm_centred_mix=True)(x, x)[1].item(), 4), "bf16 fp32-mix", round(build(gdsm_fp32_mix=True)(x, x)[1].item(), 4), "fp32", round(base, 4))
 for t in ["gdsm", "mhc_lite"]:
     r = measure(build(t), x, x, device_type="cpu")
     print(t, {k: round(v, 4) for k, v in r.items() if k.startswith(("stream/", "mixerr/"))})
