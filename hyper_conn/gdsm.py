@@ -157,15 +157,23 @@ def minor_singular_ratios(centered):
     return ratios.sort(dim = -1).values[..., :2]
 
 
-def gdsm(logits, gate):
+def gdsm(logits, gate, radial = "sphere"):
     """logits: (..., n, n) residual logits; gate: (...) raw gate logit.  Returns (..., n, n).
+
+    radial "sphere": B = J/n + g·A'/σ (deviation on the unit sphere; scale-invariant in the logits, so per-token logit
+    changes pass to B at gain ~1/σ everywhere).  radial "tanh": B = J/n + g·tanh(σ)·A'/σ, inside the ball and
+    approaching the sphere as σ → ∞: the norm saturates (sech²σ), the direction's gain tanh(σ)/σ shrinks with σ,
+    and the deviation contracts (σ₂ = g·tanh σ < 1) like mHC's Sinkhorn matrices.
 
     Computed in fp32 with autocast off: eigh has no bf16 kernel, and under autocast the Gram
     matmul would silently run in bf16."""
     n = logits.shape[-1]
     with torch.autocast(device_type = logits.device.type, enabled = False):
         centered = double_center(logits.float())
-        direction = centered / spectral_norm_exact(centered).clamp_min(1e-6)[..., None, None]
+        sigma = spectral_norm_exact(centered).clamp_min(1e-6)[..., None, None]
+        direction = centered / sigma
+        if radial == "tanh":
+            direction = direction * torch.tanh(sigma)
         out = 1.0 / n + gate.float().clamp(0.0, 1.0)[..., None, None] * direction
     return out.to(logits.dtype)
 
@@ -312,6 +320,7 @@ class GDSMHyperConnections(Module):
         dyn_res_scale = 1.0,
         tokvar_weight = 0.0,
         neg_weight = 0.0,
+        radial = "sphere",
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -401,6 +410,7 @@ class GDSMHyperConnections(Module):
         self.tokvar_penalty = None
         self.neg_weight = neg_weight
         self.neg_penalty = None
+        self.radial = radial
         self.iso_penalty = None
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -556,7 +566,7 @@ class GDSMHyperConnections(Module):
                 self.last_raw_svals = torch.linalg.svdvals(double_center(alpha_residual.float())[..., 0, 0, :, :])
             if alpha_residual.requires_grad:
                 alpha_residual.retain_grad(); self.last_logits = alpha_residual   # per-token gradient w.r.t. the residual logits
-        alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]))
+        alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]), self.radial)
         if self.tokvar_weight > 0:
             # variance of the realised mixer across tokens: GDSM's unsaturated map passes per-token logit changes to B
             # at ~unit gain (lite/mHC: ~0), and in bf16 that per-token motion drives a blow-up (2026-10-21); penalising

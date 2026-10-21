@@ -95,6 +95,7 @@ gdsm_detach_mix_input = False # GDSM: cut the gradient route stream -> residual-
 gdsm_dyn_res_scale = 1.0 # GDSM: factor on the per-token part of the residual-mixing logits (0 = static mixing)
 gdsm_tokvar_weight = 0.0 # GDSM: training penalty on the realised mixer's variance across tokens
 gdsm_neg_weight = 0.0 # GDSM: training penalty on negative entries of the realised mixer
+gdsm_radial = "sphere" # GDSM: "sphere" (A'/sigma) | "tanh" (tanh(sigma) A'/sigma: inside the ball, saturating)
 gdsm_static_res = False # GDSM bisection: residual mixing without per-token dynamics
 hc_reduce_mean = False # average the n streams at the output (fork default sums them: logits n× at init)
 fixed_batch = False # overfit test: every training micro-batch is the same seeded batch
@@ -249,6 +250,7 @@ model_args = dict(
     gdsm_dyn_res_scale=gdsm_dyn_res_scale,
     gdsm_tokvar_weight=gdsm_tokvar_weight,
     gdsm_neg_weight=gdsm_neg_weight,
+    gdsm_radial=gdsm_radial,
 ) # start with model_args from command line
 if master_process:
     print ("="*100)
