@@ -165,6 +165,8 @@ out_dir = f"out-{out_prefix_dataset}-{out_prefix_model}-{out_prefix_method}"
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
 torch.manual_seed(seed + seed_offset)
+import random as _python_random
+_python_random.seed(seed + seed_offset)  # GDSM's init picks a stream with random.randrange
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
@@ -176,7 +178,19 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 data_dir = os.path.join('data', dataset)
 
 _fixed_batch_cache = {}
-def get_batch(split):
+def position_seed(*parts):
+    # deterministic 63-bit seed from (seed, rank, *parts): the data a run sees is a pure function of where it is, so a
+    # resume (from any checkpoint, old ones included) continues the same stream instead of replaying it, and probes /
+    # evals no longer shift the training batches by drawing from a shared RNG
+    # (stable across processes: Python's str hash is salted per process, so strings go through crc32)
+    import zlib
+    value = (seed + seed_offset) & ((1 << 63) - 1)
+    for part in parts:
+        code = zlib.crc32(part.encode()) if isinstance(part, str) else int(part)
+        value = (value * 1000003 ^ code) & ((1 << 63) - 1)
+    return value
+
+def get_batch(split, position=None):
     if fixed_batch and split == 'train':
         if 'b' not in _fixed_batch_cache:
             _g = torch.Generator().manual_seed(12345)
@@ -186,16 +200,17 @@ def get_batch(split):
             _y = torch.stack([torch.from_numpy((_d[i+1:i+1+block_size]).astype(np.int64)) for i in _ix])
             _fixed_batch_cache['b'] = (_x.pin_memory().to(device, non_blocking=True), _y.pin_memory().to(device, non_blocking=True)) if device_type == 'cuda' else (_x.to(device), _y.to(device))
         return _fixed_batch_cache['b']
-    return _get_batch(split)
+    return _get_batch(split, position)
 
-def _get_batch(split):
+def _get_batch(split, position=None):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
         data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
     else:
         data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-    ix = torch.randint(len(data) - block_size, (batch_size,))
+    generator = torch.Generator().manual_seed(position_seed(split, *position)) if position is not None else None
+    ix = torch.randint(len(data) - block_size, (batch_size,), generator=generator)
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
@@ -370,7 +385,7 @@ def estimate_loss():
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = get_batch(split)
+            X, Y = get_batch(split, ("eval", k))
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -394,7 +409,7 @@ def get_lr(it):
 
 
 # training loop
-X, Y = get_batch('train') # fetch the very first batch
+X, Y = get_batch('train', ("train", iter_num, 0)) # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -469,7 +484,7 @@ while True:
             wandb.log(_ur, step=iter_num)
     if collapse_interval > 0 and iter_num % collapse_interval == 0 and master_process:
         from hyper_conn.collapse_probe import measure as collapse_measure
-        cx, cy = get_batch('val')
+        cx, cy = get_batch('val', ("probe", 0))
         cres = collapse_measure(getattr(raw_model, "_orig_mod", raw_model), cx[:2], cy[:2], device_type)
         if cres:
             print(f"[collapse {iter_num}] stream cos mean {cres['collapse/cos_mean']:.3f} max {cres['collapse/cos_max']:.3f} | eff streams mean {cres['collapse/eff_streams_mean']:.2f} min {cres['collapse/eff_streams_min']:.2f}")
@@ -482,7 +497,7 @@ while True:
         if 'sharp_probe' not in globals():
             from hyper_conn.sharpness_probe import SharpnessProbe
             sharp_probe = SharpnessProbe(getattr(raw_model, "_orig_mod", raw_model), optimizer)   # eager module: compile has no double backward
-        sx, sy = get_batch('train')
+        sx, sy = get_batch('train', ("sharpness", 0))
         sres = sharp_probe.measure(sx, sy, device_type)
         if sres:
             sres["sharpness/threshold_38_over_lr"] = 38.0 / lr
@@ -543,7 +558,8 @@ while True:
             logits, loss = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train')
+        next_position = ("train", iter_num, micro_step + 1) if micro_step + 1 < gradient_accumulation_steps else ("train", iter_num + 1, 0)
+        X, Y = get_batch('train', next_position)
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
