@@ -567,6 +567,15 @@ class GDSMHyperConnections(Module):
             if alpha_residual.requires_grad:
                 alpha_residual.retain_grad(); self.last_logits = alpha_residual   # per-token gradient w.r.t. the residual logits
         alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]), self.radial)
+        if getattr(self, 'ablate_sign', False):
+            # analysis only: drop the mixer's negative entries and project back to doubly stochastic (Sinkhorn), i.e.
+            # the nearest unsigned mixer, to measure what the signed part contributes at eval
+            with torch.autocast(device_type = alpha_residual.device.type, enabled = False):
+                unsigned = alpha_residual.float().clamp_min(0.0) + 1e-9
+                for _ in range(20):
+                    unsigned = unsigned / unsigned.sum(dim = -1, keepdim = True)
+                    unsigned = unsigned / unsigned.sum(dim = -2, keepdim = True)
+            alpha_residual = unsigned.to(alpha_residual.dtype)
         if self.tokvar_weight > 0:
             # variance of the realised mixer across tokens: GDSM's unsaturated map passes per-token logit changes to B
             # at ~unit gain (lite/mHC: ~0), and in bf16 that per-token motion drives a blow-up (2026-10-21); penalising
