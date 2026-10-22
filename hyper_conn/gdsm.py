@@ -323,6 +323,7 @@ class GDSMHyperConnections(Module):
         radial = "sphere",
         diff_rank = 0,
         diff_basis = None,
+        diff_mode = "free",
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -418,8 +419,14 @@ class GDSMHyperConnections(Module):
         # with one basis shared by all folds, so the stream differences x_i - mean(x) stay in a rank-k subspace (the
         # mixer's unit row/column sums keep that span).  diff_write starts at zero: the model starts as a plain residual.
         # The basis is owned by the GPT; a list keeps it out of this module's parameters
+        # diff_mode "residual" instead keeps the differences full width and writes them through I + diff_up @ diff_down
+        # (a rank-k decoupled correction per fold; diff_up starts at zero, so the model starts as plain GDSM)
         self.diff_rank = diff_rank
-        if diff_rank > 0:
+        self.diff_mode = diff_mode
+        if diff_rank > 0 and diff_mode == "residual":
+            self.diff_up = nn.Parameter(torch.zeros(dim, diff_rank))
+            self.diff_down = nn.Parameter(torch.randn(diff_rank, dim) / dim ** 0.5)
+        elif diff_rank > 0:
             self._diff_basis = [diff_basis]
             self.diff_write = nn.Parameter(torch.zeros(diff_rank, dim))
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
@@ -696,7 +703,10 @@ class GDSMHyperConnections(Module):
         if self.diff_rank > 0:
             mean_beta = beta.mean(dim = -2, keepdim = True)
             shared = einsum(branch_output, mean_beta.to(branch_output.dtype), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
-            low = (branch_output @ self.diff_write.to(branch_output.dtype).t()) @ self._diff_basis[0].to(branch_output.dtype).t()
+            if self.diff_mode == "residual":
+                low = branch_output + (branch_output @ self.diff_down.to(branch_output.dtype).t()) @ self.diff_up.to(branch_output.dtype).t()
+            else:
+                low = (branch_output @ self.diff_write.to(branch_output.dtype).t()) @ self._diff_basis[0].to(branch_output.dtype).t()
             deviation = einsum(low, (beta - mean_beta).to(low.dtype), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
             output = (shared + deviation).to(output.dtype)
 
