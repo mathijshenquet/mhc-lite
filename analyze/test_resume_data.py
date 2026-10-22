@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 BASE = [sys.executable, "-u", "train.py", "config/train_shakespeare_char.py", "--device=cpu", "--compile=False",
-        "--dtype=float32", "--n_layer=2", "--n_head=2", "--n_embd=64", "--block_size=64", "--batch_size=4",
+        "--dtype=float32", "--dropout=0.0", "--n_layer=2", "--n_head=2", "--n_embd=64", "--block_size=64", "--batch_size=4",
         "--gradient_accumulation_steps=2", "--lr_decay_iters=60", "--warmup_iters=5", "--eval_interval=30", "--eval_iters=3",
         "--log_interval=1", "--wandb_log=False", "--hyper_conn_type=gdsm", "--hyper_conn_n=4", "--out_prefix_dataset=resumetest",
         "--out_prefix_model=tiny", "--always_save_checkpoint=True"]
