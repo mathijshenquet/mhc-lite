@@ -423,9 +423,15 @@ class GDSMHyperConnections(Module):
         # (a rank-k decoupled correction per fold; diff_up starts at zero, so the model starts as plain GDSM)
         self.diff_rank = diff_rank
         self.diff_mode = diff_mode
-        if diff_rank > 0 and diff_mode == "residual":
+        # diff_mode "gamma" / "gamma_centred": the extra direction diff_up @ diff_down @ out gets its own dynamic per-stream
+        # write weights gamma = 2·sigmoid(...) (xHC-style, >= 0), centred over the streams in "gamma_centred" so it only
+        # moves the stream differences; random bias, since with diff_up = 0 and centred weights 0 nothing would learn
+        if diff_rank > 0 and diff_mode in ("residual", "gamma", "gamma_centred"):
             self.diff_up = nn.Parameter(torch.zeros(dim, diff_rank))
             self.diff_down = nn.Parameter(torch.randn(diff_rank, dim) / dim ** 0.5)
+            if diff_mode != "residual":
+                self.gamma_fn = nn.Parameter(torch.zeros(num_residual_streams * dim, num_residual_streams))
+                self.gamma_bias = nn.Parameter(torch.randn(num_residual_streams))
         elif diff_rank > 0:
             self._diff_basis = [diff_basis]
             self.diff_write = nn.Parameter(torch.zeros(diff_rank, dim))
@@ -673,6 +679,10 @@ class GDSMHyperConnections(Module):
         if self.channel_first:
             residuals = rearrange(residuals, 'b ... d -> b d ...')
         residuals = self.merge_fracs(residuals)
+        if self.diff_rank > 0 and self.diff_mode in ("gamma", "gamma_centred"):
+            gamma = (normed @ self.gamma_fn.to(normed.dtype) + self.gamma_bias.to(normed.dtype)).sigmoid() * 2
+            return branch_input, residuals, dict(beta = beta, gamma = gamma[..., None])
+
         return branch_input, residuals, dict(beta = beta)
 
     def depth_connection(
@@ -680,7 +690,8 @@ class GDSMHyperConnections(Module):
         branch_output,
         residuals,
         *,
-        beta
+        beta,
+        gamma = None
     ):
         assert self.add_branch_out_to_residual
 
@@ -700,7 +711,11 @@ class GDSMHyperConnections(Module):
         else:
             output = einsum(branch_output, beta, 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
 
-        if self.diff_rank > 0:
+        if self.diff_rank > 0 and gamma is not None:
+            extra = (branch_output @ self.diff_down.to(branch_output.dtype).t()) @ self.diff_up.to(branch_output.dtype).t()
+            weights = gamma - gamma.mean(dim = -2, keepdim = True) if self.diff_mode == "gamma_centred" else gamma
+            output = (output + einsum(extra, weights.to(extra.dtype), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')).to(output.dtype)
+        elif self.diff_rank > 0:
             mean_beta = beta.mean(dim = -2, keepdim = True)
             shared = einsum(branch_output, mean_beta.to(branch_output.dtype), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
             if self.diff_mode == "residual":

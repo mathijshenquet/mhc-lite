@@ -161,7 +161,7 @@ class GPTConfig:
     gdsm_neg_weight: float = 0.0         # GDSM only: training penalty on negative entries of the realised mixer
     gdsm_radial: str = "sphere"          # GDSM only: "sphere" (A'/σ) | "tanh" (tanh(σ)·A'/σ, saturating, contracting)
     gdsm_diff_rank: int = 0              # GDSM only, > 0: dHC, stream differences restricted to a learned rank-k subspace
-    gdsm_diff_mode: str = "free"         # dHC: "free" (rank-k difference subspace) | "residual" (full-width differences, write I + rank-k)
+    gdsm_diff_mode: str = "free"         # dHC: "free" (rank-k difference subspace) | "residual" (full-width differences, write I + rank-k) | "gamma" / "gamma_centred" (extra rank-k direction with own write weights)
     gdsm_static_res: bool = False        # GDSM only: residual mixing from static logits only (bisection vs mHC-lite)
     hc_reduce_mean: bool = False         # average the streams at the output instead of summing them (the sum makes the logits n× too large at init)
     gdsm_iso_weight: float = 0.0         # GDSM only: isometry prior weight on the deviation's minor singular values

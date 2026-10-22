@@ -68,7 +68,31 @@ def main():
     moved, _ = residual(tokens, tokens)
     moved_error = (moved - reference).abs().max().item()
     print(f"(3) residual mode: at init vs full model {start_error:.2e}; with diff_up != 0 it differs by {moved_error:.2e}")
-    ok = error < 1e-5 and max(ranks) <= 4 and max(ranks) > 0 and start_error < 1e-5 and moved_error > 1e-3
+    gamma_ok = True
+    for mode in ("gamma", "gamma_centred"):
+        variant = GPT(config(8, mode))
+        variant.load_state_dict(full.state_dict(), strict=False)
+        at_init, _ = variant(tokens, tokens)
+        init_error = (at_init - reference).abs().max().item()
+        means = []
+
+        def record_mean(module, args, output):
+            means.append(output.unflatten(0, (-1, 4)).float().mean(1))
+
+        hook = variant.transformer.h[0].hc_attn.register_forward_hook(record_mean)
+        variant(tokens, tokens)
+        with torch.no_grad():
+            for module in variant.modules():
+                if getattr(module, "diff_mode", "") == mode and getattr(module, "diff_rank", 0) > 0:
+                    module.diff_up.normal_()
+        changed, _ = variant(tokens, tokens)
+        hook.remove()
+        mean_shift = (means[1] - means[0]).abs().max().item()
+        change = (changed - reference).abs().max().item()
+        print(f"(4) {mode}: at init vs full {init_error:.2e}; with diff_up != 0 logits differ by {change:.2e}; "
+              f"first fold's stream mean moved by {mean_shift:.2e}")
+        gamma_ok &= init_error < 1e-5 and change > 1e-3 and ((mean_shift < 1e-5) if mode == "gamma_centred" else (mean_shift > 1e-3))
+    ok = error < 1e-5 and max(ranks) <= 4 and max(ranks) > 0 and start_error < 1e-5 and moved_error > 1e-3 and gamma_ok
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 
