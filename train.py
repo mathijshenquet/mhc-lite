@@ -97,6 +97,7 @@ gdsm_tokvar_weight = 0.0 # GDSM: training penalty on the realised mixer's varian
 gdsm_neg_weight = 0.0 # GDSM: training penalty on negative entries of the realised mixer
 gdsm_radial = "sphere" # GDSM: "sphere" (A'/sigma) | "tanh" (tanh(sigma) A'/sigma: inside the ball, saturating)
 gdsm_diff_rank = 0 # GDSM, > 0: dHC, stream differences restricted to a learned rank-k subspace
+gdsm_diff_dict = 0 # dHC tokbasis: dictionary size m (0 = n_embd)
 out_stream_scale = 0.0 # > 0: reduced output rescaled to this many stream-equivalents (constant logit scale across stream counts)
 gdsm_diff_mode = "free" # dHC: "free" (rank-k difference subspace) | "residual" (full-width differences, write I + rank-k)
 gdsm_static_res = False # GDSM bisection: residual mixing without per-token dynamics
@@ -272,6 +273,7 @@ model_args = dict(
     gdsm_diff_rank=gdsm_diff_rank,
     gdsm_diff_mode=gdsm_diff_mode,
     out_stream_scale=out_stream_scale,
+    gdsm_diff_dict=gdsm_diff_dict,
 ) # start with model_args from command line
 if master_process:
     print ("="*100)

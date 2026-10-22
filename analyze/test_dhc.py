@@ -92,7 +92,40 @@ def main():
         print(f"(4) {mode}: at init vs full {init_error:.2e}; with diff_up != 0 logits differ by {change:.2e}; "
               f"first fold's stream mean moved by {mean_shift:.2e}")
         gamma_ok &= init_error < 1e-5 and change > 1e-3 and ((mean_shift < 1e-5) if mode == "gamma_centred" else (mean_shift > 1e-3))
-    ok = error < 1e-5 and max(ranks) <= 4 and max(ranks) > 0 and start_error < 1e-5 and moved_error > 1e-3 and gamma_ok
+    tok = GPT(config(4, "tokbasis"))
+    tok.load_state_dict(full.state_dict(), strict=False)
+    with torch.no_grad():
+        for module in tok.modules():
+            if getattr(module, "diff_mode", "") == "tokbasis" and getattr(module, "diff_rank", 0) > 0:
+                module.diff_write.normal_()
+    per_token = []
+
+    def record_tok(module, args):
+        streams = args[0].unflatten(0, (-1, 4)).float()                        # (b, s, t, d)
+        diffs = streams - streams.mean(1, keepdim=True)                         # rank per token over (streams, d)
+        per_token.append(int(max(torch.linalg.matrix_rank(diffs[b, :, t], atol=1e-5) for b in range(2) for t in range(16))))
+        overall = torch.linalg.svdvals(diffs.permute(0, 2, 1, 3).reshape(-1, diffs.shape[-1]))
+        per_token.append(int((overall > 1e-4 * overall.max().clamp_min(1e-12)).sum()))
+
+    leaks = []
+
+    def record_leak(module, args):
+        streams = args[0].unflatten(0, (-1, 4)).float()
+        diffs = (streams - streams.mean(1, keepdim=True)).permute(0, 2, 1, 3)  # (b, t, s, d)
+        basis = tok.diff_basis.detach()
+        selected = (tok._diff_gate[0] != 0).float()                             # (b, t, m) the token's k directions
+        projected = torch.einsum("btsd,dm,btm,em->btse", diffs, basis, selected, basis)
+        leaks.append(((diffs - projected).norm() / diffs.norm().clamp_min(1e-12)).item())
+
+    hooks = [m.register_forward_pre_hook(record_leak) for m in tok.modules() if getattr(m, "diff_mode", "") == "tokbasis" and getattr(m, "diff_rank", 0) > 0]
+    hooks += [m.register_forward_pre_hook(record_tok) for m in tok.modules() if getattr(m, "diff_mode", "") == "tokbasis" and getattr(m, "diff_rank", 0) > 0]
+    tok(tokens, tokens)
+    for hook in hooks:
+        hook.remove()
+    print(f"(5) tokbasis k=4: (max per-token rank, rank over all tokens) per fold {list(zip(per_token[::2], per_token[1::2]))}")
+    print(f"    share of each token's stream differences outside its own k directions, per fold: {[f'{x:.1e}' for x in leaks]}")
+    tok_ok = max(per_token[2::2]) <= 3 and max(per_token[3::2]) > 4 and max(leaks[1:]) < 1e-5   # own subspace per token; overall > k
+    ok = tok_ok and error < 1e-5 and max(ranks) <= 4 and max(ranks) > 0 and start_error < 1e-5 and moved_error > 1e-3 and gamma_ok
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 

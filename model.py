@@ -164,6 +164,7 @@ class GPTConfig:
     gdsm_diff_mode: str = "free"         # dHC: "free" (rank-k difference subspace) | "residual" (full-width differences, write I + rank-k) | "gamma" / "gamma_centred" (extra rank-k direction with own write weights)
     gdsm_static_res: bool = False        # GDSM only: residual mixing from static logits only (bisection vs mHC-lite)
     hc_reduce_mean: bool = False         # average the streams at the output instead of summing them (the sum makes the logits n× too large at init)
+    gdsm_diff_dict: int = 0              # dHC tokbasis: dictionary size m (0 = n_embd); each token selects gdsm_diff_rank of the m directions
     out_stream_scale: float = 0.0        # > 0: rescale the reduced output to this many stream-equivalents (sum · s/n; plain: · s), so the
                                          # logit scale is the same for every stream count (the sum of n per-stream ln_f outputs grows with n)
     gdsm_iso_weight: float = 0.0         # GDSM only: isometry prior weight on the deviation's minor singular values
@@ -178,11 +179,16 @@ class GPT(nn.Module):
         self.config = config
         if config.hyper_conn_type == "gdsm" and config.gdsm_diff_rank > 0 and config.gdsm_diff_mode == "free":
             self.diff_basis = nn.Parameter(torch.linalg.qr(torch.randn(config.n_embd, config.gdsm_diff_rank))[0])
+        self._diff_gate = [None]
+        if config.hyper_conn_type == "gdsm" and config.gdsm_diff_rank > 0 and config.gdsm_diff_mode == "tokbasis":
+            dictionary = config.gdsm_diff_dict or config.n_embd
+            self.diff_basis = nn.Parameter(torch.linalg.qr(torch.randn(config.n_embd, dictionary))[0])
+            self.diff_gate_fn = nn.Linear(config.n_embd, dictionary)
 
         init_hc, expand_stream, reduce_stream = hyper_conn_init_func(
             config.hyper_conn_type , 
             config.hyper_conn_n , 
-            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight, "static_res": config.gdsm_static_res, "read_softcap": config.gdsm_read_softcap, "centred_mix": config.gdsm_centred_mix, "fp32_logits": config.gdsm_fp32_logits, "fp32_mix": config.gdsm_fp32_mix, "fp32_stream": config.gdsm_fp32_stream, "detach_mix_input": config.gdsm_detach_mix_input, "dyn_res_scale": config.gdsm_dyn_res_scale, "tokvar_weight": config.gdsm_tokvar_weight, "neg_weight": config.gdsm_neg_weight, "radial": config.gdsm_radial, "diff_rank": config.gdsm_diff_rank, "diff_basis": getattr(self, "diff_basis", None), "diff_mode": config.gdsm_diff_mode} if config.hyper_conn_type == "gdsm" else {}),
+            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight, "static_res": config.gdsm_static_res, "read_softcap": config.gdsm_read_softcap, "centred_mix": config.gdsm_centred_mix, "fp32_logits": config.gdsm_fp32_logits, "fp32_mix": config.gdsm_fp32_mix, "fp32_stream": config.gdsm_fp32_stream, "detach_mix_input": config.gdsm_detach_mix_input, "dyn_res_scale": config.gdsm_dyn_res_scale, "tokvar_weight": config.gdsm_tokvar_weight, "neg_weight": config.gdsm_neg_weight, "radial": config.gdsm_radial, "diff_rank": config.gdsm_diff_rank, "diff_basis": getattr(self, "diff_basis", None), "diff_mode": config.gdsm_diff_mode, "diff_gate_holder": self._diff_gate} if config.hyper_conn_type == "gdsm" else {}),
         )
         self.expand_stream = expand_stream
         self.reduce_stream = reduce_stream
@@ -248,6 +254,11 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
+        if hasattr(self, "diff_gate_fn"):
+            # each token picks its k difference directions once, from its input embedding (consistent through depth)
+            logits = self.diff_gate_fn(x)
+            values, indices = logits.topk(self.config.gdsm_diff_rank, dim = -1)
+            self._diff_gate[0] = torch.zeros_like(logits).scatter(-1, indices, torch.sigmoid(values))
         if self.expand_stream is not None:
             x = self.expand_stream(x)
         for block in self.transformer.h:

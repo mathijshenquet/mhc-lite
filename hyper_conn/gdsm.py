@@ -349,6 +349,7 @@ class GDSMHyperConnections(Module):
         diff_rank = 0,
         diff_basis = None,
         diff_mode = "free",
+        diff_gate_holder = None,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -461,6 +462,13 @@ class GDSMHyperConnections(Module):
             if diff_mode != "residual":
                 self.gamma_fn = nn.Parameter(torch.zeros(num_residual_streams * dim, num_residual_streams))
                 self.gamma_bias = nn.Parameter(torch.randn(num_residual_streams))
+        elif diff_rank > 0 and diff_mode == "tokbasis":
+            # per-token subspace: the GPT keeps a dictionary basis (d × m) and, from the input embedding, a per-token gate
+            # with k nonzero weights over its m directions (fixed through depth); every fold writes its difference part
+            # into the token's k selected directions
+            self._diff_basis = [diff_basis]
+            self._diff_gate = diff_gate_holder
+            self.diff_write = nn.Parameter(torch.zeros(diff_basis.shape[1], dim))
         elif diff_rank > 0:
             self._diff_basis = [diff_basis]
             self.diff_write = nn.Parameter(torch.zeros(diff_rank, dim))
@@ -752,6 +760,9 @@ class GDSMHyperConnections(Module):
             shared = einsum(branch_output, mean_beta.to(branch_output.dtype), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
             if self.diff_mode == "residual":
                 low = branch_output + (branch_output @ self.diff_down.to(branch_output.dtype).t()) @ self.diff_up.to(branch_output.dtype).t()
+            elif self.diff_mode == "tokbasis":
+                coords = (branch_output @ self.diff_write.to(branch_output.dtype).t()) * self._diff_gate[0].to(branch_output.dtype).unsqueeze(-2)
+                low = coords @ self._diff_basis[0].to(branch_output.dtype).t()
             else:
                 low = (branch_output @ self.diff_write.to(branch_output.dtype).t()) @ self._diff_basis[0].to(branch_output.dtype).t()
             deviation = einsum(low, (beta - mean_beta).to(low.dtype), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
