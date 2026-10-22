@@ -177,6 +177,31 @@ def gdsm(logits, gate, radial = "sphere"):
         out = 1.0 / n + gate.float().clamp(0.0, 1.0)[..., None, None] * direction
     return out.to(logits.dtype)
 
+def shc_paper(logits, gamma_u, gamma_v):
+    """Upstream sHC (Liu et al., arXiv 2603.20896, Eq. 9): H = J + (Q U) diag(tanh s) (Q V)^T with Q an orthonormal basis of
+    1-perp and U, V = Cayley(skew(gamma·tanh(.))).  Uses the (n-1)×(n-1) top-left block of the (..., n, n) logits:
+    strict upper triangle -> U's skew entries, strict lower triangle -> V's, diagonal -> the singular values.  Q is a QR
+    basis rather than their truncated Helmert matrix (another basis of 1-perp: the same set, rotated into U and V)."""
+    n = logits.shape[-1]
+    with torch.autocast(device_type = logits.device.type, enabled = False):
+        block = logits.float()[..., : n - 1, : n - 1]
+        upper = torch.triu(torch.ones(n - 1, n - 1, dtype = torch.bool, device = logits.device), diagonal = 1)
+        eye = torch.eye(n - 1, device = logits.device)
+
+        def cayley(raw, gamma):
+            entries = gamma.float() * torch.tanh(raw) * upper
+            skew = entries - entries.transpose(-1, -2)
+            return torch.linalg.solve(eye + skew, eye - skew)   # (I + A)^-1 (I - A), orthogonal for skew A
+
+        u = cayley(block, gamma_u)
+        v = cayley(block.transpose(-1, -2), gamma_v)
+        singular = torch.tanh(torch.diagonal(block, dim1 = -2, dim2 = -1))
+        basis = _ones_complement_basis(n, torch.float32, logits.device)
+        left = basis @ u
+        right = basis @ v
+        out = 1.0 / n + (left * singular[..., None, :]) @ right.transpose(-1, -2)
+    return out.to(logits.dtype)
+
 # main functions
 
 def get_expand_reduce_stream_functions(
@@ -382,6 +407,10 @@ class GDSMHyperConnections(Module):
         init_alpha0 = torch.ones((num_residual_streams_fracs, num_input_views_fracs)) * -1
         init_alpha0[init_residual_index, :] = 1.
         init_alpha1 = torch.eye(num_residual_streams_fracs)   # GDSM: logits ARE the matrix; identity init
+        if radial == "shc":
+            init_alpha1 = init_alpha1 * 4.0   # upstream sHC init: singular-value bias 4 (H ≈ I), core logits 0
+            self.shc_gamma_u = nn.Parameter(torch.ones(()))
+            self.shc_gamma_v = nn.Parameter(torch.ones(()))
         self.static_alpha = nn.Parameter(cat((init_alpha0, init_alpha1), dim = 1))
 
         # ------
@@ -589,7 +618,10 @@ class GDSMHyperConnections(Module):
                 self.last_raw_svals = torch.linalg.svdvals(double_center(alpha_residual.float())[..., 0, 0, :, :])
             if alpha_residual.requires_grad:
                 alpha_residual.retain_grad(); self.last_logits = alpha_residual   # per-token gradient w.r.t. the residual logits
-        alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]), self.radial)
+        if self.radial == "shc":
+            alpha_residual = shc_paper(alpha_residual, self.shc_gamma_u, self.shc_gamma_v)
+        else:
+            alpha_residual = gdsm(alpha_residual, gate.expand(*alpha_residual.shape[:-2]), self.radial)
         if getattr(self, 'ablate_sign', False):
             # analysis only: drop the mixer's negative entries and project back to doubly stochastic (Sinkhorn), i.e.
             # the nearest unsigned mixer, to measure what the signed part contributes at eval
