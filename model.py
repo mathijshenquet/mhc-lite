@@ -160,6 +160,7 @@ class GPTConfig:
     gdsm_tokvar_weight: float = 0.0      # GDSM only: training penalty on the realised mixer's variance across tokens
     gdsm_neg_weight: float = 0.0         # GDSM only: training penalty on negative entries of the realised mixer
     gdsm_radial: str = "sphere"          # GDSM only: "sphere" (A'/σ) | "tanh" (tanh(σ)·A'/σ, saturating, contracting)
+    gdsm_diff_rank: int = 0              # GDSM only, > 0: dHC, stream differences restricted to a learned rank-k subspace
     gdsm_static_res: bool = False        # GDSM only: residual mixing from static logits only (bisection vs mHC-lite)
     hc_reduce_mean: bool = False         # average the streams at the output instead of summing them (the sum makes the logits n× too large at init)
     gdsm_iso_weight: float = 0.0         # GDSM only: isometry prior weight on the deviation's minor singular values
@@ -172,11 +173,13 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.config = config
+        if config.hyper_conn_type == "gdsm" and config.gdsm_diff_rank > 0:
+            self.diff_basis = nn.Parameter(torch.linalg.qr(torch.randn(config.n_embd, config.gdsm_diff_rank))[0])
 
         init_hc, expand_stream, reduce_stream = hyper_conn_init_func(
             config.hyper_conn_type , 
             config.hyper_conn_n , 
-            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight, "static_res": config.gdsm_static_res, "read_softcap": config.gdsm_read_softcap, "centred_mix": config.gdsm_centred_mix, "fp32_logits": config.gdsm_fp32_logits, "fp32_mix": config.gdsm_fp32_mix, "fp32_stream": config.gdsm_fp32_stream, "detach_mix_input": config.gdsm_detach_mix_input, "dyn_res_scale": config.gdsm_dyn_res_scale, "tokvar_weight": config.gdsm_tokvar_weight, "neg_weight": config.gdsm_neg_weight, "radial": config.gdsm_radial} if config.hyper_conn_type == "gdsm" else {}),
+            **({"logit_grad_scale": config.gdsm_logit_grad_scale, "iso_weight": config.gdsm_iso_weight, "static_res": config.gdsm_static_res, "read_softcap": config.gdsm_read_softcap, "centred_mix": config.gdsm_centred_mix, "fp32_logits": config.gdsm_fp32_logits, "fp32_mix": config.gdsm_fp32_mix, "fp32_stream": config.gdsm_fp32_stream, "detach_mix_input": config.gdsm_detach_mix_input, "dyn_res_scale": config.gdsm_dyn_res_scale, "tokvar_weight": config.gdsm_tokvar_weight, "neg_weight": config.gdsm_neg_weight, "radial": config.gdsm_radial, "diff_rank": config.gdsm_diff_rank, "diff_basis": getattr(self, "diff_basis", None)} if config.hyper_conn_type == "gdsm" else {}),
         )
         self.expand_stream = expand_stream
         self.reduce_stream = reduce_stream

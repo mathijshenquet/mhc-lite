@@ -321,6 +321,8 @@ class GDSMHyperConnections(Module):
         tokvar_weight = 0.0,
         neg_weight = 0.0,
         radial = "sphere",
+        diff_rank = 0,
+        diff_basis = None,
         branch: Module | None = None,
         layer_index = None,
         channel_first = False,
@@ -412,6 +414,14 @@ class GDSMHyperConnections(Module):
         self.neg_penalty = None
         self.radial = radial
         self.iso_penalty = None
+        # dHC: the per-stream part of every write, (beta_i - mean beta)·out, goes through basis @ diff_write (d -> k -> d)
+        # with one basis shared by all folds, so the stream differences x_i - mean(x) stay in a rank-k subspace (the
+        # mixer's unit row/column sums keep that span).  diff_write starts at zero: the model starts as a plain residual.
+        # The basis is owned by the GPT; a list keeps it out of this module's parameters
+        self.diff_rank = diff_rank
+        if diff_rank > 0:
+            self._diff_basis = [diff_basis]
+            self.diff_write = nn.Parameter(torch.zeros(diff_rank, dim))
         self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
         self.residual_scale = nn.Parameter(torch.ones(1) * 1e-2)
 
@@ -682,6 +692,13 @@ class GDSMHyperConnections(Module):
                 residuals = residuals.float()
         else:
             output = einsum(branch_output, beta, 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
+
+        if self.diff_rank > 0:
+            mean_beta = beta.mean(dim = -2, keepdim = True)
+            shared = einsum(branch_output, mean_beta.to(branch_output.dtype), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
+            low = (branch_output @ self.diff_write.to(branch_output.dtype).t()) @ self._diff_basis[0].to(branch_output.dtype).t()
+            deviation = einsum(low, (beta - mean_beta).to(low.dtype), 'b ... f1 d, b ... f1 s f2 -> b ... f2 s d')
+            output = (shared + deviation).to(output.dtype)
 
         output = rearrange(output, 'b ... s d -> (b s) ... d')
 
